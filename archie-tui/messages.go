@@ -8,7 +8,8 @@ type EngineResponseMsg struct {
 	ToolCalls []string `json:"tool_calls"`
 	HubStatus string   `json:"hub_status"`
 	NodeID    string   `json:"node_id"`
-	Skills    []Skill  `json:"skills"`
+	Skills         []Skill  `json:"skills"`
+	DispatchTarget string   `json:"dispatch_target"`
 }
 
 type Skill struct {

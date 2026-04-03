@@ -80,12 +80,13 @@ func (m model) listenCmd() tea.Cmd {
 
 		// Parse into EngineResponseMsg
 		resp := EngineResponseMsg{
-			Type: getString(raw, "type"),
-			SessionID: getString(raw, "session_id"),
-			Content: getString(raw, "content"),
-			Intent: getString(raw, "intent"),
-			HubStatus: getString(raw, "hub_status"),
-			NodeID: getString(raw, "node_id"),
+			Type:           getString(raw, "type"),
+			SessionID:      getString(raw, "session_id"),
+			Content:        getString(raw, "content"),
+			Intent:         getString(raw, "intent"),
+			HubStatus:      getString(raw, "hub_status"),
+			NodeID:         getString(raw, "node_id"),
+			DispatchTarget: getString(raw, "dispatch_target"),
 		}
 
 		// Parse skills array if present
