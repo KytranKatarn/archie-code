@@ -3,7 +3,7 @@ import pytest_asyncio
 import json
 import asyncio
 import websockets
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from archie_engine.engine import Engine
 from archie_engine.config import EngineConfig
 from archie_engine.hub import HubStatus
@@ -29,9 +29,15 @@ async def engine_with_hub(tmp_path):
     eng = Engine(config)
     # Mock connector to avoid real HTTP calls
     if eng.hub_connector:
+        auth_mock = MagicMock()
+        auth_mock.load_node_id = MagicMock(return_value=None)
+        auth_mock.load_node_key = MagicMock(return_value=None)
+        eng.hub_connector.auth = auth_mock
         eng.hub_connector.get = AsyncMock(return_value={"status": "ok"})
         eng.hub_connector.post = AsyncMock(return_value={"status": "ok"})
-        eng.hub_connector.register_node = AsyncMock(return_value={"node_id": "test-123"})
+        eng.hub_connector.register_node = AsyncMock(return_value={
+            "success": True, "node": {"node_id": "test-123"}, "api_key": "key123"
+        })
         eng.hub_connector.send_heartbeat = AsyncMock(return_value={"status": "ok"})
         eng.hub_connector.get_skills = AsyncMock(return_value={"skills": []})
         eng.hub_connector.list_agents = AsyncMock(return_value={"agents": []})
