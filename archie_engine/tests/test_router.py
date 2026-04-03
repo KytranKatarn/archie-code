@@ -93,3 +93,27 @@ async def test_route_tool_error_handled(router, mock_tools):
     intent = {"type": "file_operation", "confidence": 0.9, "raw_input": "read missing.py", "entities": {"files": ["missing.py"]}}
     result = await router.route(intent, context={"working_dir": "/tmp"})
     assert not result["success"]
+
+
+@pytest.mark.asyncio
+async def test_route_platform_dispatch(mock_tools, mock_inference):
+    """When hub connector is provided, platform intents dispatch through it."""
+    mock_hub = AsyncMock()
+    mock_hub.dispatch = AsyncMock(return_value={
+        "response": "Code review complete. Found 2 issues.",
+        "agent_name": "S.H.I.E.L.D.",
+        "model": "qwen2.5:7b",
+    })
+
+    router = CommandRouter(
+        tools=mock_tools, inference=mock_inference, hub_connector=mock_hub
+    )
+
+    intent = {"type": "code_task", "confidence": 0.6, "raw_input": "review auth module"}
+    context = {"working_dir": "/tmp", "history": []}
+
+    result = await router.route(intent, context, dispatch_target="platform", capability="code_review")
+    assert result["success"] is True
+    assert "S.H.I.E.L.D." in result["response"] or "Code review" in result["response"]
+    assert result["model_used"] is not None
+    mock_hub.dispatch.assert_called_once()

@@ -22,6 +22,7 @@ from archie_engine.hub.sync import HubSync
 from archie_engine.skills import SkillRegistry
 from archie_engine.skills.executor import SkillExecutor
 from archie_engine.claude.context_bridge import ContextBridge
+from archie_engine.dispatch_strategy import DispatchStrategy, DispatchTarget
 from archie_engine.claude.escalation import EscalationDetector
 from archie_engine.claude.mcp_server import MCPToolServer
 
@@ -36,11 +37,6 @@ class Engine:
         self.inference = InferenceClient(config.ollama_host)
         self.intent_parser = IntentParser()
         self.tools = self._build_tool_registry()
-        self.router = CommandRouter(
-            tools=self.tools,
-            inference=self.inference,
-            default_model=config.default_model,
-        )
         self.server = EngineServer(config.ws_host, config.ws_port)
 
         # Skills
@@ -68,7 +64,7 @@ class Engine:
             {"name": "search_knowledge", "description": "Search ARCHIE knowledge base", "parameters": {"query": {"type": "string"}}},
         ])
 
-        # Hub connectivity (optional)
+        # Hub connectivity (optional) — must be set up BEFORE router so hub_connector is available
         self.hub_connector: HubConnector | None = None
         self.hub_heartbeat: Heartbeat | None = None
         self.hub_sync: HubSync | None = None
@@ -87,6 +83,19 @@ class Engine:
             self.hub_sync = HubSync(
                 connector=self.hub_connector, cache_dir=config.hub_skills_cache_dir
             )
+
+        # Router — created after hub_connector so it can be wired in
+        self.router = CommandRouter(
+            tools=self.tools,
+            inference=self.inference,
+            default_model=config.default_model,
+            hub_connector=self.hub_connector,
+        )
+
+        # Dispatch strategy
+        self.dispatch_strategy = DispatchStrategy(
+            hub_available=is_hub_configured(config)
+        )
 
     @property
     def hub_status(self) -> HubStatus:
@@ -113,6 +122,7 @@ class Engine:
         await self.server.start()
         if self.hub_heartbeat:
             await self.hub_heartbeat.start()
+            self.dispatch_strategy.hub_available = (self.hub_heartbeat.status == HubStatus.CONNECTED)
             if self.hub_sync and self.hub_heartbeat.status == HubStatus.CONNECTED:
                 await self.hub_sync.sync_all()
         self.skill_registry.load()
@@ -194,11 +204,19 @@ class Engine:
         # Classify intent
         intent = self.intent_parser.classify(content)
 
+        # Decide dispatch target
+        decision = self.dispatch_strategy.decide(intent)
+        logger.info("Dispatch: %s → %s (%s)", intent["type"], decision.target.value, decision.reason)
+
         # Build context
         context = await self.sessions.build_context(session_id)
 
         # Route to handler
-        result = await self.router.route(intent, context)
+        result = await self.router.route(
+            intent, context,
+            dispatch_target=decision.target.value if decision.target != DispatchTarget.LOCAL else None,
+            capability=decision.capability,
+        )
 
         # Record assistant response
         response_text = result.get("response", "")
@@ -209,5 +227,6 @@ class Engine:
             "session_id": session_id,
             "content": response_text,
             "intent": intent["type"],
+            "dispatch_target": decision.target.value,
             "tool_calls": result.get("tool_calls", []),
         }

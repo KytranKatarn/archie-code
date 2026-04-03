@@ -88,3 +88,25 @@ async def test_engine_unknown_message_type(engine):
         await ws.send(json.dumps({"type": "frobnicate"}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_engine_dispatch_decision_in_response():
+    """Engine responses should include dispatch_target field."""
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    engine = Engine(config)
+    await engine.start()
+
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+            await ws.send(json.dumps({
+                "type": "message",
+                "content": "What is the Bridge dispatcher?",
+            }))
+            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+            assert resp["type"] == "response"
+            assert "dispatch_target" in resp
+            assert resp["dispatch_target"] == "local"
+            assert resp["intent"] == "knowledge_query"
+    finally:
+        await engine.stop()

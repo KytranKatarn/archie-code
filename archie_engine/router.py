@@ -10,13 +10,22 @@ logger = logging.getLogger(__name__)
 
 
 class CommandRouter:
-    def __init__(self, tools: ToolRegistry, inference: InferenceClient, default_model: str = "qwen2.5:7b"):
+    def __init__(self, tools: ToolRegistry, inference: InferenceClient,
+                 default_model: str = "qwen2.5:7b", hub_connector=None):
         self.tools = tools
         self.inference = inference
         self.default_model = default_model
+        self.hub_connector = hub_connector
 
-    async def route(self, intent: dict, context: dict) -> dict:
+    async def route(self, intent: dict, context: dict,
+                    dispatch_target: str | None = None, capability: str | None = None) -> dict:
         """Route an intent to the appropriate handler. Returns response dict."""
+        # Platform dispatch takes priority when specified
+        if dispatch_target == "platform" and self.hub_connector:
+            return await self._handle_platform_dispatch(
+                intent["raw_input"], intent.get("entities", {}), context, capability
+            )
+
         intent_type = intent.get("type", "conversation")
         raw_input = intent.get("raw_input", "")
         entities = intent.get("entities", {})
@@ -107,6 +116,41 @@ class CommandRouter:
             "response": result.output if result.success else result.error,
             "tool_calls": [tool_call],
             "model_used": None,
+        }
+
+    # ------------------------------------------------------------------
+    # Platform dispatch handler
+    # ------------------------------------------------------------------
+
+    async def _handle_platform_dispatch(self, raw_input: str, entities: dict,
+                                        context: dict, capability: str | None) -> dict:
+        """Dispatch to platform Bridge via hub connector."""
+        user_context = {
+            "working_dir": context.get("working_dir", ""),
+            "files": entities.get("files", []),
+            "history_length": len(context.get("history", [])),
+        }
+
+        resp = await self.hub_connector.dispatch(
+            prompt=raw_input,
+            agent_target=f"capability:{capability}" if capability else None,
+            user_context=user_context,
+        )
+
+        if "error" in resp:
+            logger.warning("Platform dispatch failed: %s — falling back to local", resp["error"])
+            return await self._handle_code_task(raw_input, entities, context)
+
+        agent_name = resp.get("agent_name", "platform agent")
+        response_text = resp.get("response", "")
+        model_used = resp.get("model", self.default_model)
+
+        return {
+            "success": True,
+            "response": f"[{agent_name}] {response_text}",
+            "tool_calls": [],
+            "model_used": model_used,
+            "agent_name": agent_name,
         }
 
     # ------------------------------------------------------------------
