@@ -130,3 +130,67 @@ async def test_engine_shell_not_triggered_by_questions():
                 f"Question classified as shell_command — intent parser bug not fixed"
     finally:
         await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_engine_delegation():
+    """Engine handles delegated tasks from Claude."""
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    engine = Engine(config)
+    await engine.start()
+
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+            await ws.send(json.dumps({
+                "type": "delegate",
+                "task": "read the config file",
+                "files": ["config.py"],
+                "expected_outcome": "file contents",
+            }))
+            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+            assert resp["type"] == "delegation_result"
+            assert "task" in resp
+            assert "success" in resp
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_engine_state_sync():
+    """Engine handles incoming state sync events."""
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    engine = Engine(config)
+    await engine.start()
+
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+            await ws.send(json.dumps({
+                "type": "state_sync",
+                "event": {
+                    "kind": "file_changed",
+                    "data": {"file": "main.py", "action": "edit", "source": "claude"},
+                },
+            }))
+            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+            assert resp["type"] == "sync_ack"
+            assert "conflicts" in resp
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_engine_has_learning_store(tmp_path):
+    """Engine should have a learning store."""
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999", data_dir=tmp_path)
+    engine = Engine(config)
+    await engine.start()
+
+    try:
+        assert engine.learning_store is not None
+        engine.learning_store.record(
+            intent_type="code_task", task_summary="test learning",
+            resolution="test resolution", source="test",
+        )
+        assert len(engine.learning_store.get_all()) == 1
+    finally:
+        await engine.stop()

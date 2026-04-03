@@ -22,7 +22,9 @@ from archie_engine.hub.sync import HubSync
 from archie_engine.skills import SkillRegistry
 from archie_engine.skills.executor import SkillExecutor
 from archie_engine.claude.context_bridge import ContextBridge
-from archie_engine.dispatch_strategy import DispatchStrategy, DispatchTarget
+from archie_engine.dispatch_strategy import DispatchStrategy, DispatchTarget, DispatchDecision
+from archie_engine.state_sync import StateSyncChannel, SyncEvent
+from archie_engine.learning import LearningStore
 from archie_engine.claude.escalation import EscalationDetector
 from archie_engine.claude.mcp_server import MCPToolServer
 
@@ -97,6 +99,12 @@ class Engine:
             hub_available=is_hub_configured(config)
         )
 
+        # State sync for Claude collaboration
+        self.state_sync = StateSyncChannel()
+
+        # Learning store for escalation patterns
+        self.learning_store = LearningStore(data_dir=config.data_dir)
+
     @property
     def hub_status(self) -> HubStatus:
         if self.hub_heartbeat:
@@ -167,6 +175,12 @@ class Engine:
         if msg_type == "message":
             return await self._process_chat_message(msg)
 
+        if msg_type == "delegate":
+            return await self._handle_delegation(msg)
+
+        if msg_type == "state_sync":
+            return self._handle_incoming_sync(msg)
+
         return {"type": "error", "error": f"Unknown message type: {msg_type}"}
 
     async def _process_chat_message(self, msg: dict) -> dict:
@@ -208,6 +222,19 @@ class Engine:
         decision = self.dispatch_strategy.decide(intent)
         logger.info("Dispatch: %s → %s (%s)", intent["type"], decision.target.value, decision.reason)
 
+        # Check learning store before platform dispatch
+        if decision.target == DispatchTarget.PLATFORM:
+            learned = self.learning_store.find_match(
+                intent_type=intent["type"], task_summary=content
+            )
+            if learned:
+                logger.info("Found learned pattern — handling locally instead of escalating")
+                decision = DispatchDecision(
+                    target=DispatchTarget.LOCAL,
+                    reason=f"Learned pattern: {learned['resolution'][:50]}",
+                    capability=decision.capability,
+                )
+
         # Build context
         context = await self.sessions.build_context(session_id)
 
@@ -229,4 +256,63 @@ class Engine:
             "intent": intent["type"],
             "dispatch_target": decision.target.value,
             "tool_calls": result.get("tool_calls", []),
+        }
+
+    async def _handle_delegation(self, msg: dict) -> dict:
+        """Handle a task delegated from Claude."""
+        task = msg.get("task", "")
+        files = msg.get("files", [])
+        session_id = msg.get("session_id")
+
+        if not session_id:
+            session = await self.sessions.create(working_dir=str(Path.cwd()))
+            session_id = session["id"]
+
+        self.state_sync.emit(SyncEvent(
+            kind="task_started",
+            data={"task": task, "source": "claude_delegation", "files": files},
+        ))
+
+        intent = self.intent_parser.classify(task)
+        decision = self.dispatch_strategy.decide(intent)
+        context = await self.sessions.build_context(session_id)
+        context["files_involved"] = files
+
+        result = await self.router.route(
+            intent, context,
+            dispatch_target=decision.target.value if decision.target != DispatchTarget.LOCAL else None,
+            capability=decision.capability,
+        )
+
+        self.state_sync.emit(SyncEvent(
+            kind="task_completed",
+            data={"task": task, "success": result.get("success", False)},
+        ))
+
+        return {
+            "type": "delegation_result",
+            "session_id": session_id,
+            "task": task,
+            "success": result.get("success", False),
+            "content": result.get("response", ""),
+            "intent": intent["type"],
+        }
+
+    def _handle_incoming_sync(self, msg: dict) -> dict:
+        """Handle a state sync event from Claude."""
+        event_data = msg.get("event", {})
+        event = SyncEvent(
+            kind=event_data.get("kind", "unknown"),
+            data=event_data.get("data", {}),
+        )
+
+        conflicts = self.state_sync.check_conflicts(event)
+        if conflicts:
+            logger.warning("State sync conflicts: %s", conflicts)
+
+        self.state_sync.emit(event)
+
+        return {
+            "type": "sync_ack",
+            "conflicts": conflicts,
         }
