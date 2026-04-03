@@ -10,6 +10,19 @@ COMPLEXITY_FILE_THRESHOLD = 4
 
 
 class EscalationDetector:
+    def __init__(self) -> None:
+        self._failure_counts: dict[str, int] = {}
+
+    def record_failure(self, session_id: str) -> int:
+        self._failure_counts[session_id] = self._failure_counts.get(session_id, 0) + 1
+        return self._failure_counts[session_id]
+
+    def reset_failures(self, session_id: str) -> None:
+        self._failure_counts[session_id] = 0
+
+    def get_failure_count(self, session_id: str) -> int:
+        return self._failure_counts.get(session_id, 0)
+
     def should_escalate(self, intent: dict, failure_count: int = 0,
                         context: dict | None = None, user_requested: bool = False) -> dict:
         if user_requested:

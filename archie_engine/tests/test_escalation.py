@@ -42,3 +42,26 @@ def test_user_override(detector):
         intent={"type": "file_operation", "confidence": 0.9}, failure_count=0, user_requested=True)
     assert result["escalate"]
     assert "user" in result["reason"].lower()
+
+
+def test_record_failure_increments():
+    detector = EscalationDetector()
+    assert detector.record_failure("session-1") == 1
+    assert detector.record_failure("session-1") == 2
+    assert detector.get_failure_count("session-1") == 2
+
+
+def test_reset_failures():
+    detector = EscalationDetector()
+    detector.record_failure("session-1")
+    detector.record_failure("session-1")
+    detector.reset_failures("session-1")
+    assert detector.get_failure_count("session-1") == 0
+
+
+def test_failure_count_per_session():
+    detector = EscalationDetector()
+    detector.record_failure("session-1")
+    detector.record_failure("session-2")
+    assert detector.get_failure_count("session-1") == 1
+    assert detector.get_failure_count("session-2") == 1

@@ -110,3 +110,13 @@ class HubConnector:
     async def get_agent_status(self, agent_id: int) -> dict:
         """Get current status of a specific agent."""
         return await self.get(f"/api/starbase/agents/{agent_id}/status")
+
+    async def store_learning(self, knowledge_type: str, title: str,
+                             content: str, category: str = "escalation_learning") -> dict:
+        """Store a learning in the platform knowledge base via Consciousness."""
+        return await self.post("/api/archie/knowledge/store", data={
+            "knowledge_type": knowledge_type,
+            "title": title,
+            "content": content,
+            "category": category,
+        })
