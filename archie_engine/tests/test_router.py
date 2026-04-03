@@ -117,3 +117,27 @@ async def test_route_platform_dispatch(mock_tools, mock_inference):
     assert "S.H.I.E.L.D." in result["response"] or "Code review" in result["response"]
     assert result["model_used"] is not None
     mock_hub.dispatch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_platform_dispatch_logs_job(mock_tools, mock_inference):
+    """After successful platform dispatch, log_job should be called."""
+    from unittest.mock import AsyncMock
+
+    mock_hub = AsyncMock()
+    mock_hub.dispatch = AsyncMock(return_value={
+        "response": "Review complete.",
+        "agent_name": "S.H.I.E.L.D.",
+        "model": "qwen2.5:7b",
+    })
+    mock_hub.log_job = AsyncMock(return_value={"success": True, "job_id": 99})
+
+    router = CommandRouter(
+        tools=mock_tools, inference=mock_inference, hub_connector=mock_hub
+    )
+
+    intent = {"type": "code_task", "confidence": 0.6, "raw_input": "review auth"}
+    context = {"working_dir": "/tmp", "history": []}
+
+    await router.route(intent, context, dispatch_target="platform", capability="code_review")
+    mock_hub.log_job.assert_called_once()

@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 
 from archie_engine.tools import ToolRegistry
 from archie_engine.inference import InferenceClient
@@ -125,6 +126,8 @@ class CommandRouter:
     async def _handle_platform_dispatch(self, raw_input: str, entities: dict,
                                         context: dict, capability: str | None) -> dict:
         """Dispatch to platform Bridge via hub connector."""
+        start = time.monotonic()
+
         user_context = {
             "working_dir": context.get("working_dir", ""),
             "files": entities.get("files", []),
@@ -137,6 +140,8 @@ class CommandRouter:
             user_context=user_context,
         )
 
+        duration_ms = int((time.monotonic() - start) * 1000)
+
         if "error" in resp:
             logger.warning("Platform dispatch failed: %s — falling back to local", resp["error"])
             return await self._handle_code_task(raw_input, entities, context)
@@ -144,6 +149,17 @@ class CommandRouter:
         agent_name = resp.get("agent_name", "platform agent")
         response_text = resp.get("response", "")
         model_used = resp.get("model", self.default_model)
+
+        # Log the job for activity tracking
+        try:
+            await self.hub_connector.log_job(
+                task=capability or "general",
+                agent_name=agent_name,
+                result_summary=response_text[:200],
+                duration_ms=duration_ms,
+            )
+        except Exception as e:
+            logger.warning("Failed to log job: %s", e)
 
         return {
             "success": True,
