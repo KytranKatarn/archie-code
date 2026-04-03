@@ -10,6 +10,11 @@ type EngineResponseMsg struct {
 	NodeID    string   `json:"node_id"`
 	Skills         []Skill  `json:"skills"`
 	DispatchTarget string   `json:"dispatch_target"`
+	// Platform status fields
+	PlatformHub   string `json:"hub"`
+	PlatformModel string `json:"model"`
+	AgentsActive  int
+	AgentsTotal   int
 }
 
 type Skill struct {
@@ -29,3 +34,5 @@ type DisconnectedMsg struct {
 type ErrorMsg struct {
 	Err error
 }
+
+type StatusPanelRefreshMsg struct{}

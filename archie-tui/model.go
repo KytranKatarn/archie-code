@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +18,7 @@ type model struct {
 	statusBar   *views.StatusBar
 	skillPicker *views.SkillPicker
 	companion   *views.CompanionView
+	statusPanel *views.StatusPanel
 	client      *Client
 	sessionID   string
 	width       int
@@ -40,8 +42,15 @@ func initialModel(wsURL string) model {
 		statusBar:   views.NewStatusBar(),
 		skillPicker: views.NewSkillPicker(),
 		companion:   views.NewCompanionView(),
+		statusPanel: views.NewStatusPanel(),
 		client:      NewClient(wsURL),
 	}
+}
+
+func statusPanelRefreshCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return StatusPanelRefreshMsg{}
+	})
 }
 
 func (m model) Init() tea.Cmd {
@@ -51,6 +60,7 @@ func (m model) Init() tea.Cmd {
 		views.BlinkCmd(),
 		views.SwayCmd(),
 		views.SleepCheckCmd(),
+		statusPanelRefreshCmd(),
 	)
 }
 
@@ -107,6 +117,20 @@ func (m model) listenCmd() tea.Cmd {
 			}
 		}
 
+		// Parse platform_status fields
+		if raw["hub"] != nil {
+			resp.PlatformHub = getString(raw, "hub")
+		}
+		if raw["model"] != nil {
+			resp.PlatformModel = getString(raw, "model")
+		}
+		if agentsMap, ok := raw["agents"].(map[string]interface{}); ok {
+			active, _ := agentsMap["active"].(float64)
+			total, _ := agentsMap["total"].(float64)
+			resp.AgentsActive = int(active)
+			resp.AgentsTotal = int(total)
+		}
+
 		return resp
 	}
 }
@@ -153,6 +177,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.skillPicker.Visible = false
 				return m, nil
 			}
+		case "ctrl+s":
+			m.statusPanel.Visible = !m.statusPanel.Visible
+			if m.statusPanel.Visible && m.connected {
+				_ = m.client.Send(map[string]interface{}{"type": "platform_status"})
+			}
+			return m, nil
 		case "tab":
 			m.skillPicker.Visible = !m.skillPicker.Visible
 			return m, nil
@@ -171,6 +201,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case StatusPanelRefreshMsg:
+		if m.statusPanel.Visible && m.connected {
+			_ = m.client.Send(map[string]interface{}{"type": "platform_status"})
+		}
+		return m, statusPanelRefreshCmd()
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -182,6 +218,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.skillPicker.Height = msg.Height / 2
 		m.companion.Width = msg.Width
 		m.companion.Height = msg.Height
+		m.statusPanel.Width = msg.Width / 3
+		if m.statusPanel.Width < 25 {
+			m.statusPanel.Width = 25
+		}
 
 	case ConnectedMsg:
 		m.connected = true
@@ -222,6 +262,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.skillPicker.Skills = items
 		case "error":
 			m.chat.AddMessage("system", fmt.Sprintf("Error: %s", msg.Content))
+		case "platform_status":
+			m.statusPanel.Hub = msg.PlatformHub
+			m.statusPanel.Model = msg.PlatformModel
+			if msg.AgentsTotal > 0 {
+				m.statusPanel.Agents = &views.AgentStats{
+					Active: msg.AgentsActive,
+					Total:  msg.AgentsTotal,
+				}
+			}
 		}
 		// Update companion state based on engine message
 		switch msg.Type {
@@ -284,6 +333,9 @@ func (m model) View() string {
 		mainPanel = views.LCARSPanel(chatContent, "COMMS", ColorCyan, m.width)
 	}
 
+	// Status panel (side panel, toggled with Ctrl+S)
+	statusPanelBlock := m.statusPanel.Render()
+
 	// Skill picker overlay
 	var skillSection string
 	if m.skillPicker.Visible {
@@ -300,7 +352,18 @@ func (m model) View() string {
 	// Assemble
 	var sections []string
 	sections = append(sections, header)
-	sections = append(sections, mainPanel)
+
+	if statusPanelBlock != "" {
+		panelWidth := m.width - m.statusPanel.Width - 1
+		if panelWidth < 40 {
+			panelWidth = m.width
+		}
+		mainPanelStyled := lipgloss.NewStyle().Width(panelWidth).Render(mainPanel)
+		combined := lipgloss.JoinHorizontal(lipgloss.Top, mainPanelStyled, statusPanelBlock)
+		sections = append(sections, combined)
+	} else {
+		sections = append(sections, mainPanel)
+	}
 	if skillSection != "" {
 		sections = append(sections, skillSection)
 	}
