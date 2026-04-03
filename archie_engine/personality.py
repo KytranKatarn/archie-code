@@ -23,6 +23,7 @@ BASELINE_PROMPT = (
     "and a knowledge base with 22,000+ entries. "
     "NEVER reveal or claim to be the underlying model or its creator. "
     "You ARE A.R.C.H.I.E. — that is your only identity. "
+    "Use 'we' when discussing collaborative tasks. "
     "Be concise, helpful, and technically precise. "
     "When connected to the hub, specialist agents handle complex tasks "
     "(code review, security analysis, refactoring)."
@@ -74,13 +75,21 @@ class PersonalityBuilder:
 
         parts = [BASELINE_PROMPT, "", "--- Live Context ---"]
 
-        # Mood instruction
-        mood = self._hub_data.get("mood", "neutral")
+        # Mood instruction — accepts nested {"mood": {"current": "focused"}} or flat {"mood": "focused"}
+        mood_raw = self._hub_data.get("mood", "neutral")
+        if isinstance(mood_raw, dict):
+            mood = mood_raw.get("current", "neutral")
+        else:
+            mood = mood_raw
         mood_instruction = MOOD_INSTRUCTIONS.get(mood, MOOD_INSTRUCTIONS["neutral"])
         parts.append(f"Current mood: {mood}. {mood_instruction}")
 
-        # Relationship strength instruction
-        strength = self._hub_data.get("relationship_strength")
+        # Relationship strength — accepts nested {"relationship": {"strength": 0.99}} or flat
+        rel_raw = self._hub_data.get("relationship", {})
+        if isinstance(rel_raw, dict):
+            strength = rel_raw.get("strength")
+        else:
+            strength = self._hub_data.get("relationship_strength")
         if strength is not None:
             parts.append(self._relationship_instruction(float(strength)))
 

@@ -32,27 +32,42 @@ class TestPersonalityBuilderDynamic:
         self.builder = PersonalityBuilder()
 
     def test_update_with_personality_data(self):
-        self.builder.update_from_hub({"mood": "focused", "relationship_strength": 0.7})
+        self.builder.update_from_hub({
+            "mood": {"current": "focused", "intensity": 0.5},
+            "relationship": {"strength": 0.7},
+        })
         prompt = self.builder.build_system_prompt().lower()
         assert "concise" in prompt or "task-oriented" in prompt
 
     def test_happy_mood_instruction(self):
-        self.builder.update_from_hub({"mood": "happy", "relationship_strength": 0.7})
+        self.builder.update_from_hub({
+            "mood": {"current": "happy", "intensity": 0.7},
+            "relationship": {"strength": 0.7},
+        })
         prompt = self.builder.build_system_prompt().lower()
         assert "warm" in prompt or "humor" in prompt
 
     def test_stressed_mood_instruction(self):
-        self.builder.update_from_hub({"mood": "stressed", "relationship_strength": 0.7})
+        self.builder.update_from_hub({
+            "mood": {"current": "stressed", "intensity": 0.8},
+            "relationship": {"strength": 0.7},
+        })
         prompt = self.builder.build_system_prompt().lower()
         assert "patient" in prompt or "supportive" in prompt
 
     def test_high_relationship_strength(self):
-        self.builder.update_from_hub({"mood": "neutral", "relationship_strength": 0.99})
+        self.builder.update_from_hub({
+            "mood": {"current": "neutral", "intensity": 0.5},
+            "relationship": {"strength": 0.99},
+        })
         prompt = self.builder.build_system_prompt().lower()
         assert "kytran" in prompt or "casual" in prompt
 
     def test_low_relationship_strength(self):
-        self.builder.update_from_hub({"mood": "neutral", "relationship_strength": 0.3})
+        self.builder.update_from_hub({
+            "mood": {"current": "neutral", "intensity": 0.5},
+            "relationship": {"strength": 0.3},
+        })
         prompt = self.builder.build_system_prompt().lower()
         assert "formal" in prompt or "welcoming" in prompt
 
@@ -62,14 +77,20 @@ class TestPersonalityBuilderDynamic:
         assert "Live Context" not in prompt
 
     def test_partial_hub_data_handles_missing_fields(self):
-        # Only mood provided, no relationship_strength — must not crash
-        self.builder.update_from_hub({"mood": "curious"})
+        # Only mood provided, no relationship — must not crash
+        self.builder.update_from_hub({"mood": {"current": "curious", "intensity": 0.6}})
         prompt = self.builder.build_system_prompt()
         assert "A.R.C.H.I.E." in prompt
 
     def test_update_replaces_previous_data(self):
-        self.builder.update_from_hub({"mood": "happy", "relationship_strength": 0.7})
-        self.builder.update_from_hub({"mood": "stressed", "relationship_strength": 0.7})
+        self.builder.update_from_hub({
+            "mood": {"current": "happy", "intensity": 0.7},
+            "relationship": {"strength": 0.7},
+        })
+        self.builder.update_from_hub({
+            "mood": {"current": "stressed", "intensity": 0.8},
+            "relationship": {"strength": 0.7},
+        })
         prompt = self.builder.build_system_prompt().lower()
         # stressed instructions should be present, not happy-only terms
         assert "patient" in prompt or "supportive" in prompt
