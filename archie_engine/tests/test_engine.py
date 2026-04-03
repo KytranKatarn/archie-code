@@ -110,3 +110,23 @@ async def test_engine_dispatch_decision_in_response():
             assert resp["intent"] == "knowledge_query"
     finally:
         await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_engine_shell_not_triggered_by_questions():
+    """Regression: natural language questions must not run as shell commands."""
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    engine = Engine(config)
+    await engine.start()
+
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+            await ws.send(json.dumps({
+                "type": "message",
+                "content": "What models are available?",
+            }))
+            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+            assert resp["intent"] != "shell_command", \
+                f"Question classified as shell_command — intent parser bug not fixed"
+    finally:
+        await engine.stop()
