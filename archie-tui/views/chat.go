@@ -36,13 +36,28 @@ func (c *ChatView) Render() string {
 	text := lipgloss.NewStyle().Foreground(lipgloss.Color("#e5e7eb"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6b7280")).Italic(true)
 
+	maxWidth := c.Width - 4 // 2 chars padding each side
+	if maxWidth < 20 {
+		maxWidth = 80
+	}
+
 	var lines []string
 	for _, msg := range c.Messages {
 		switch msg.Role {
 		case "user":
-			lines = append(lines, text.Render(fmt.Sprintf("  > %s", msg.Content)))
+			wrapped := wordWrap(msg.Content, maxWidth-2) // account for "> " prefix
+			for i, line := range strings.Split(wrapped, "\n") {
+				if i == 0 {
+					lines = append(lines, text.Render(fmt.Sprintf("  > %s", line)))
+				} else {
+					lines = append(lines, text.Render(fmt.Sprintf("    %s", line)))
+				}
+			}
 		case "assistant":
-			lines = append(lines, cyan.Render(fmt.Sprintf("  %s", msg.Content)))
+			wrapped := wordWrap(msg.Content, maxWidth)
+			for _, line := range strings.Split(wrapped, "\n") {
+				lines = append(lines, cyan.Render(fmt.Sprintf("  %s", line)))
+			}
 		case "system":
 			lines = append(lines, dimStyle.Render(fmt.Sprintf("  [%s]", msg.Content)))
 		}
@@ -54,4 +69,35 @@ func (c *ChatView) Render() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// wordWrap breaks text into lines that fit within maxWidth characters.
+func wordWrap(text string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return text
+	}
+	var result strings.Builder
+	for _, paragraph := range strings.Split(text, "\n") {
+		if result.Len() > 0 {
+			result.WriteString("\n")
+		}
+		words := strings.Fields(paragraph)
+		if len(words) == 0 {
+			continue
+		}
+		lineLen := 0
+		for i, word := range words {
+			wl := len(word)
+			if i > 0 && lineLen+1+wl > maxWidth {
+				result.WriteString("\n")
+				lineLen = 0
+			} else if i > 0 {
+				result.WriteString(" ")
+				lineLen++
+			}
+			result.WriteString(word)
+			lineLen += wl
+		}
+	}
+	return result.String()
 }
