@@ -1,7 +1,9 @@
 """Tests for PersonalityBuilder — TDD pass (written before implementation)."""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 from archie_engine.personality import PersonalityBuilder
+from archie_engine.router import CommandRouter
 
 
 class TestPersonalityBuilderBaseline:
@@ -94,3 +96,56 @@ class TestPersonalityBuilderDynamic:
         prompt = self.builder.build_system_prompt().lower()
         # stressed instructions should be present, not happy-only terms
         assert "patient" in prompt or "supportive" in prompt
+
+
+class TestRouterUsesPersonality:
+    @pytest.fixture
+    def router_with_personality(self):
+        tools = MagicMock()
+        inference = MagicMock()
+        inference.chat = AsyncMock(return_value={
+            "message": {"content": "Hello from ARCHIE"}
+        })
+        personality = PersonalityBuilder()
+        router = CommandRouter(
+            tools=tools,
+            inference=inference,
+            default_model="archie:7b",
+            personality_builder=personality,
+        )
+        return router, inference, personality
+
+    @pytest.mark.asyncio
+    async def test_conversation_uses_personality_prompt(self, router_with_personality):
+        router, inference, personality = router_with_personality
+        intent = {"type": "conversation", "raw_input": "Hello", "entities": {}}
+        context = {"history": []}
+        await router.route(intent, context)
+        call_kwargs = inference.chat.call_args
+        system_prompt = call_kwargs.kwargs.get("system", "")
+        assert "A.R.C.H.I.E." in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_code_task_uses_personality_prompt(self, router_with_personality):
+        router, inference, personality = router_with_personality
+        intent = {"type": "code_task", "raw_input": "fix the bug", "entities": {}}
+        context = {"history": []}
+        await router.route(intent, context)
+        call_kwargs = inference.chat.call_args
+        system_prompt = call_kwargs.kwargs.get("system", "")
+        assert "A.R.C.H.I.E." in system_prompt
+        assert "qwen" not in system_prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_dynamic_prompt_used_when_hub_data_present(self, router_with_personality):
+        router, inference, personality = router_with_personality
+        personality.update_from_hub({
+            "mood": {"current": "happy", "intensity": 0.7},
+            "relationship": {"strength": 0.99},
+        })
+        intent = {"type": "conversation", "raw_input": "Hi!", "entities": {}}
+        context = {"history": []}
+        await router.route(intent, context)
+        call_kwargs = inference.chat.call_args
+        system_prompt = call_kwargs.kwargs.get("system", "")
+        assert "Live Context" in system_prompt

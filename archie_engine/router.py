@@ -6,28 +6,21 @@ import time
 
 from archie_engine.tools import ToolRegistry
 from archie_engine.inference import InferenceClient
+from archie_engine.personality import PersonalityBuilder
 
 logger = logging.getLogger(__name__)
-
-# Core identity prompt — shared by all LLM handlers
-ARCHIE_SYSTEM_PROMPT = (
-    "You are A.R.C.H.I.E. (Autonomous Resource & Cognitive Hyperintelligence Engine), "
-    "an AI-powered development assistant running locally via the A.R.C.H.I.E. Code CLI. "
-    "You have access to tools: file reading/writing, git operations, shell commands, "
-    "and a knowledge base with 22,000+ entries. When the user asks about their code or files, "
-    "you can read and analyze them. You are part of a platform with 123 AI agents across "
-    "16 departments. When connected to the hub, specialist agents handle complex tasks "
-    "(code review, security analysis, refactoring). Be helpful, concise, and technically precise."
-)
 
 
 class CommandRouter:
     def __init__(self, tools: ToolRegistry, inference: InferenceClient,
-                 default_model: str = "qwen2.5:7b", hub_connector=None):
+                 default_model: str = "archie:7b",
+                 hub_connector=None,
+                 personality_builder: PersonalityBuilder | None = None):
         self.tools = tools
         self.inference = inference
         self.default_model = default_model
         self.hub_connector = hub_connector
+        self.personality = personality_builder or PersonalityBuilder()
 
     async def route(self, intent: dict, context: dict,
                     dispatch_target: str | None = None, capability: str | None = None) -> dict:
@@ -187,7 +180,7 @@ class CommandRouter:
     async def _handle_code_task(self, raw_input: str, entities: dict, context: dict) -> dict:
         """Build system + user prompt, call inference.chat(), return LLM response."""
         system_prompt = (
-            ARCHIE_SYSTEM_PROMPT + " "
+            self.personality.build_system_prompt() + " "
             "Focus on the code task. Provide a clear, concise solution with working code."
         )
         history = context.get("history", [])
@@ -212,7 +205,7 @@ class CommandRouter:
     async def _handle_knowledge_query(self, raw_input: str, entities: dict, context: dict) -> dict:
         """Answer a knowledge / documentation query via inference."""
         system_prompt = (
-            ARCHIE_SYSTEM_PROMPT + " "
+            self.personality.build_system_prompt() + " "
             "Answer the question accurately and concisely, citing relevant details."
         )
         history = context.get("history", [])
@@ -242,7 +235,7 @@ class CommandRouter:
         resp = await self.inference.chat(
             messages=messages,
             model=self.default_model,
-            system=ARCHIE_SYSTEM_PROMPT,
+            system=self.personality.build_system_prompt(),
         )
 
         content = _extract_content(resp)
