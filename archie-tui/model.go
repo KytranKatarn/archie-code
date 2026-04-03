@@ -261,36 +261,48 @@ func (m model) View() string {
 		return "Loading..."
 	}
 
-	var sections []string
+	// LCARS header
+	header := views.LCARSHeader("A.R.C.H.I.E. Code CLI", ColorCyan, m.width)
 
-	banner := BannerStyle.Render("  A.R.C.H.I.E. Code CLI")
-	sections = append(sections, banner, "")
-
+	// Chat content with companion
 	chatContent := m.chat.Render()
-
-	// Render companion overlay to the right of chat
 	companionBlock := m.companion.Render()
+
+	var mainPanel string
 	if companionBlock != "" {
 		companionWidth := 20
-		chatWidth := m.width - companionWidth - 2
+		chatWidth := m.width - companionWidth - 6 // account for panel borders
 		if chatWidth < 40 {
-			chatWidth = m.width
-			companionBlock = ""
-		}
-		if companionBlock != "" {
+			mainPanel = views.LCARSPanel(chatContent, "COMMS", ColorCyan, m.width)
+		} else {
 			chatStyled := lipgloss.NewStyle().Width(chatWidth).Render(chatContent)
 			companionStyled := lipgloss.NewStyle().Width(companionWidth).Render(companionBlock)
 			combined := lipgloss.JoinHorizontal(lipgloss.Bottom, chatStyled, companionStyled)
-			sections = append(sections, combined)
-		} else {
-			sections = append(sections, chatContent)
+			mainPanel = views.LCARSPanel(combined, "COMMS", ColorCyan, m.width)
 		}
 	} else {
-		sections = append(sections, chatContent)
+		mainPanel = views.LCARSPanel(chatContent, "COMMS", ColorCyan, m.width)
 	}
 
+	// Skill picker overlay
+	var skillSection string
 	if m.skillPicker.Visible {
-		sections = append(sections, m.skillPicker.Render())
+		skillSection = m.skillPicker.Render()
+	}
+
+	// Input area
+	inputLine := lipgloss.NewStyle().Padding(0, 1).Render(m.input.View())
+
+	// LCARS status bar
+	statusContent := m.statusBar.RenderContent()
+	statusBar := views.LCARSStatusBar(statusContent, ColorCyan, m.width)
+
+	// Assemble
+	var sections []string
+	sections = append(sections, header)
+	sections = append(sections, mainPanel)
+	if skillSection != "" {
+		sections = append(sections, skillSection)
 	}
 
 	mainContent := strings.Join(sections, "\n")
@@ -299,8 +311,5 @@ func (m model) View() string {
 		mainContent += strings.Repeat("\n", m.height-3-mainLines)
 	}
 
-	inputLine := lipgloss.NewStyle().Padding(0, 1).Render(m.input.View())
-	status := m.statusBar.Render()
-
-	return mainContent + "\n" + inputLine + "\n" + status
+	return mainContent + "\n" + inputLine + "\n" + statusBar
 }
