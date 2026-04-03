@@ -156,7 +156,7 @@ async def test_get_personality(connector):
     assert result.get("name") == "archie"
     assert result.get("mood", {}).get("current") == "focused"
     called_url = mock_get.call_args.args[0] if mock_get.call_args.args else ""
-    assert "/api/bridge/agent-personality/1" in called_url
+    assert "/tools/starbase/api/bridge/agent-personality/1" in called_url
 
 
 @pytest.mark.asyncio

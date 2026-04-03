@@ -113,7 +113,7 @@ class HubConnector:
 
     async def get_personality(self, agent_id: int) -> dict:
         """Get personality, mood, and relationship data for an agent."""
-        return await self.get(f"/api/bridge/agent-personality/{agent_id}")
+        return await self.get(f"/tools/starbase/api/bridge/agent-personality/{agent_id}")
 
     async def store_learning(self, knowledge_type: str, title: str,
                              content: str, category: str = "escalation_learning") -> dict:
