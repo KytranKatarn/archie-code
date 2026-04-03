@@ -27,6 +27,7 @@ from archie_engine.state_sync import StateSyncChannel, SyncEvent
 from archie_engine.learning import LearningStore
 from archie_engine.claude.escalation import EscalationDetector
 from archie_engine.claude.mcp_server import MCPToolServer
+from archie_engine.personality import PersonalityBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +87,16 @@ class Engine:
                 connector=self.hub_connector, cache_dir=config.hub_skills_cache_dir
             )
 
+        # Personality
+        self.personality = PersonalityBuilder()
+
         # Router — created after hub_connector so it can be wired in
         self.router = CommandRouter(
             tools=self.tools,
             inference=self.inference,
             default_model=config.default_model,
             hub_connector=self.hub_connector,
+            personality_builder=self.personality,
         )
 
         # Dispatch strategy
@@ -133,6 +138,8 @@ class Engine:
             self.dispatch_strategy.hub_available = (self.hub_heartbeat.status == HubStatus.CONNECTED)
             if self.hub_sync and self.hub_heartbeat.status == HubStatus.CONNECTED:
                 await self.hub_sync.sync_all()
+            if self.hub_connector and self.hub_heartbeat and self.hub_heartbeat.status == HubStatus.CONNECTED:
+                await self._fetch_personality()
         self.skill_registry.load()
         logger.info("ARCHIE Engine started")
 
@@ -142,6 +149,18 @@ class Engine:
         await self.server.stop()
         await self.db.close()
         logger.info("ARCHIE Engine stopped")
+
+    async def _fetch_personality(self) -> None:
+        """Fetch personality data from hub and update the builder."""
+        try:
+            data = await self.hub_connector.get_personality(agent_id=1)  # ARCHIE is agent_id=1
+            if "error" not in data:
+                self.personality.update_from_hub(data)
+                logger.info("Personality loaded: mood=%s", data.get("mood", {}).get("current", "unknown"))
+            else:
+                logger.warning("Could not fetch personality: %s", data.get("error"))
+        except Exception as e:
+            logger.warning("Personality fetch failed: %s — using baseline", e)
 
     async def handle_message(self, msg: dict) -> dict:
         """Process a message from WebSocket client."""
