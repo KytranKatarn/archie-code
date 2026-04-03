@@ -68,6 +68,50 @@ func (m model) connectCmd() tea.Cmd {
 	}
 }
 
+// listenCmd returns a tea.Cmd that waits for the next engine message
+// and feeds it back into the Bubble Tea update loop.
+func (m model) listenCmd() tea.Cmd {
+	return func() tea.Msg {
+		ch := make(chan map[string]interface{}, 1)
+		m.client.SetOnMessage(func(msg map[string]interface{}) {
+			ch <- msg
+		})
+		raw := <-ch
+
+		// Parse into EngineResponseMsg
+		resp := EngineResponseMsg{
+			Type: getString(raw, "type"),
+			SessionID: getString(raw, "session_id"),
+			Content: getString(raw, "content"),
+			Intent: getString(raw, "intent"),
+			HubStatus: getString(raw, "hub_status"),
+			NodeID: getString(raw, "node_id"),
+		}
+
+		// Parse skills array if present
+		if skillsRaw, ok := raw["skills"].([]interface{}); ok {
+			for _, s := range skillsRaw {
+				if sm, ok := s.(map[string]interface{}); ok {
+					resp.Skills = append(resp.Skills, Skill{
+						Name:        getString(sm, "name"),
+						Description: getString(sm, "description"),
+						Source:      getString(sm, "source"),
+					})
+				}
+			}
+		}
+
+		return resp
+	}
+}
+
+func getString(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -136,6 +180,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.SessionID != "" {
 			m.sessionID = msg.SessionID
 		}
+		// Start listening for engine responses
+		return m, m.listenCmd()
 
 	case DisconnectedMsg:
 		m.connected = false
@@ -164,6 +210,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "error":
 			m.chat.AddMessage("system", fmt.Sprintf("Error: %s", msg.Content))
 		}
+		// Keep listening for next engine message
+		return m, m.listenCmd()
 	}
 
 	var cmd tea.Cmd

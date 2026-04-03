@@ -9,6 +9,17 @@ from archie_engine.inference import InferenceClient
 
 logger = logging.getLogger(__name__)
 
+# Core identity prompt — shared by all LLM handlers
+ARCHIE_SYSTEM_PROMPT = (
+    "You are A.R.C.H.I.E. (Autonomous Resource & Cognitive Hyperintelligence Engine), "
+    "an AI-powered development assistant running locally via the A.R.C.H.I.E. Code CLI. "
+    "You have access to tools: file reading/writing, git operations, shell commands, "
+    "and a knowledge base with 22,000+ entries. When the user asks about their code or files, "
+    "you can read and analyze them. You are part of a platform with 123 AI agents across "
+    "16 departments. When connected to the hub, specialist agents handle complex tasks "
+    "(code review, security analysis, refactoring). Be helpful, concise, and technically precise."
+)
+
 
 class CommandRouter:
     def __init__(self, tools: ToolRegistry, inference: InferenceClient,
@@ -176,8 +187,8 @@ class CommandRouter:
     async def _handle_code_task(self, raw_input: str, entities: dict, context: dict) -> dict:
         """Build system + user prompt, call inference.chat(), return LLM response."""
         system_prompt = (
-            "You are an expert software engineer. "
-            "Analyse the code task and provide a clear, concise solution with working code."
+            ARCHIE_SYSTEM_PROMPT + " "
+            "Focus on the code task. Provide a clear, concise solution with working code."
         )
         history = context.get("history", [])
         messages = list(history) + [{"role": "user", "content": raw_input}]
@@ -201,7 +212,7 @@ class CommandRouter:
     async def _handle_knowledge_query(self, raw_input: str, entities: dict, context: dict) -> dict:
         """Answer a knowledge / documentation query via inference."""
         system_prompt = (
-            "You are a knowledgeable assistant. "
+            ARCHIE_SYSTEM_PROMPT + " "
             "Answer the question accurately and concisely, citing relevant details."
         )
         history = context.get("history", [])
@@ -231,6 +242,7 @@ class CommandRouter:
         resp = await self.inference.chat(
             messages=messages,
             model=self.default_model,
+            system=ARCHIE_SYSTEM_PROMPT,
         )
 
         content = _extract_content(resp)
