@@ -141,3 +141,76 @@ async def test_platform_dispatch_logs_job(mock_tools, mock_inference):
 
     await router.route(intent, context, dispatch_target="platform", capability="code_review")
     mock_hub.log_job.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_kb_enrichment_adds_context_to_prompt(mock_tools, mock_inference):
+    """When hub has KB results, they're injected into the system prompt."""
+    mock_hub = AsyncMock()
+    mock_hub.search_knowledge = AsyncMock(return_value={
+        "results": [
+            {"title": "Auth Middleware", "content": "The auth middleware validates JWT tokens..."},
+        ]
+    })
+
+    router = CommandRouter(
+        tools=mock_tools, inference=mock_inference, hub_connector=mock_hub
+    )
+
+    intent = {"type": "knowledge_query", "confidence": 0.8, "raw_input": "how does auth work?", "entities": {}}
+    await router.route(intent, context={"working_dir": "/tmp"})
+
+    # Verify search_knowledge was called
+    mock_hub.search_knowledge.assert_called_once_with("how does auth work?", limit=3)
+
+    # Verify the system prompt includes KB context
+    call_kwargs = mock_inference.chat.call_args
+    system_prompt = call_kwargs.kwargs.get("system", "") or call_kwargs[1].get("system", "")
+    assert "Auth Middleware" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_kb_enrichment_graceful_when_no_hub(router, mock_inference):
+    """Without hub connector, KB enrichment is skipped gracefully."""
+    intent = {"type": "conversation", "confidence": 0.8, "raw_input": "hello", "entities": {}}
+    result = await router.route(intent, context={"working_dir": "/tmp"})
+    assert result["response"]  # still works
+    mock_inference.chat.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_kb_enrichment_graceful_on_error(mock_tools, mock_inference):
+    """If KB search throws, inference still completes."""
+    mock_hub = AsyncMock()
+    mock_hub.search_knowledge = AsyncMock(side_effect=Exception("hub unreachable"))
+
+    router = CommandRouter(
+        tools=mock_tools, inference=mock_inference, hub_connector=mock_hub
+    )
+
+    intent = {"type": "conversation", "confidence": 0.8, "raw_input": "hello", "entities": {}}
+    result = await router.route(intent, context={"working_dir": "/tmp"})
+    assert result["response"]  # still works despite KB error
+
+
+@pytest.mark.asyncio
+async def test_kb_enrichment_on_code_task(mock_tools, mock_inference):
+    """Code tasks also get KB enrichment when hub is connected."""
+    mock_hub = AsyncMock()
+    mock_hub.search_knowledge = AsyncMock(return_value={
+        "results": [
+            {"title": "Coding Standards", "content": "Use Black formatter, type hints required..."},
+        ]
+    })
+
+    router = CommandRouter(
+        tools=mock_tools, inference=mock_inference, hub_connector=mock_hub
+    )
+
+    intent = {"type": "code_task", "confidence": 0.9, "raw_input": "fix the auth bug", "entities": {}}
+    await router.route(intent, context={"working_dir": "/tmp", "history": []})
+
+    mock_hub.search_knowledge.assert_called_once()
+    call_kwargs = mock_inference.chat.call_args
+    system_prompt = call_kwargs.kwargs.get("system", "") or call_kwargs[1].get("system", "")
+    assert "Coding Standards" in system_prompt

@@ -22,6 +22,27 @@ class CommandRouter:
         self.hub_connector = hub_connector
         self.personality = personality_builder or PersonalityBuilder()
 
+    async def _enrich_with_kb(self, query: str, limit: int = 3) -> str:
+        """Search KB for relevant context when hub is connected. Returns context string or empty."""
+        if not self.hub_connector:
+            return ""
+        try:
+            results = await self.hub_connector.search_knowledge(query, limit=limit)
+            if not results or not results.get("results"):
+                return ""
+            snippets = []
+            for r in results["results"][:limit]:
+                title = r.get("title", "")
+                content = r.get("content", "")[:300]
+                if title and content:
+                    snippets.append(f"- {title}: {content}")
+            if not snippets:
+                return ""
+            return "\n\nRelevant knowledge from the platform:\n" + "\n".join(snippets) + "\n"
+        except Exception as e:
+            logger.debug("KB enrichment failed (non-critical): %s", e)
+            return ""
+
     async def route(self, intent: dict, context: dict,
                     dispatch_target: str | None = None, capability: str | None = None) -> dict:
         """Route an intent to the appropriate handler. Returns response dict."""
@@ -179,9 +200,11 @@ class CommandRouter:
 
     async def _handle_code_task(self, raw_input: str, entities: dict, context: dict) -> dict:
         """Build system + user prompt, call inference.chat(), return LLM response."""
+        kb_context = await self._enrich_with_kb(raw_input)
         system_prompt = (
             self.personality.build_system_prompt() + " "
             "Focus on the code task. Provide a clear, concise solution with working code."
+            + kb_context
         )
         history = context.get("history", [])
         messages = list(history) + [{"role": "user", "content": raw_input}]
@@ -204,9 +227,11 @@ class CommandRouter:
 
     async def _handle_knowledge_query(self, raw_input: str, entities: dict, context: dict) -> dict:
         """Answer a knowledge / documentation query via inference."""
+        kb_context = await self._enrich_with_kb(raw_input)
         system_prompt = (
             self.personality.build_system_prompt() + " "
             "Answer the question accurately and concisely, citing relevant details."
+            + kb_context
         )
         history = context.get("history", [])
         messages = list(history) + [{"role": "user", "content": raw_input}]
@@ -229,13 +254,14 @@ class CommandRouter:
 
     async def _handle_conversation(self, raw_input: str, entities: dict, context: dict) -> dict:
         """General conversation — call inference.chat() with history from context."""
+        kb_context = await self._enrich_with_kb(raw_input)
         history = context.get("history", [])
         messages = list(history) + [{"role": "user", "content": raw_input}]
 
         resp = await self.inference.chat(
             messages=messages,
             model=self.default_model,
-            system=self.personality.build_system_prompt(),
+            system=self.personality.build_system_prompt() + kb_context,
         )
 
         content = _extract_content(resp)
