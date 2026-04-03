@@ -108,3 +108,33 @@ async def test_get_skills(connector):
     with patch("aiohttp.ClientSession.get", return_value=mock_resp):
         result = await connector.get_skills()
     assert len(result.get("skills", [])) > 0
+
+
+@pytest.mark.asyncio
+async def test_log_job(connector):
+    mock_resp = _mock_response(200, {"id": 42, "status": "logged"})
+    with patch("aiohttp.ClientSession.post", return_value=mock_resp) as mock_post:
+        result = await connector.log_job(
+            task="summarize document",
+            agent_name="ARCHIE",
+            result_summary="Document summarized in 3 bullet points.",
+            duration_ms=1234,
+        )
+    assert result.get("status") == "logged"
+    call_kwargs = mock_post.call_args
+    sent_json = call_kwargs.kwargs.get("json") or call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+    if sent_json is None:
+        sent_json = call_kwargs.kwargs.get("json")
+    # Verify URL contains the expected path
+    called_url = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("url", "")
+    assert "/api/archie/jobs" in called_url
+
+
+@pytest.mark.asyncio
+async def test_get_agent_status(connector):
+    mock_resp = _mock_response(200, {"agent_id": 7, "shift_state": "active", "station": "COMMAND"})
+    with patch("aiohttp.ClientSession.get", return_value=mock_resp) as mock_get:
+        result = await connector.get_agent_status(7)
+    assert result.get("shift_state") == "active"
+    called_url = mock_get.call_args.args[0] if mock_get.call_args.args else mock_get.call_args.kwargs.get("url", "")
+    assert "/api/starbase/agents/7/status" in called_url

@@ -95,3 +95,18 @@ class HubConnector:
     async def get_model_state(self) -> dict:
         """Get current model load state from the hub."""
         return await self.get("/api/starbase/models")
+
+    async def log_job(self, task: str, agent_name: str,
+                      result_summary: str, duration_ms: int) -> dict:
+        """Log a completed job to the hub for activity tracking."""
+        return await self.post("/api/archie/jobs", data={
+            "task": task,
+            "agent_name": agent_name,
+            "result_summary": result_summary,
+            "duration_ms": duration_ms,
+            "source": "archie-code",
+        })
+
+    async def get_agent_status(self, agent_id: int) -> dict:
+        """Get current status of a specific agent."""
+        return await self.get(f"/api/starbase/agents/{agent_id}/status")
