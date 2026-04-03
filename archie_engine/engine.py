@@ -28,6 +28,7 @@ from archie_engine.learning import LearningStore
 from archie_engine.claude.escalation import EscalationDetector
 from archie_engine.claude.mcp_server import MCPToolServer
 from archie_engine.personality import PersonalityBuilder
+from archie_engine.hub.inbound import InboundServer
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,9 @@ class Engine:
                 connector=self.hub_connector, cache_dir=config.hub_skills_cache_dir
             )
 
+        # Inbound server (hub dispatches work here)
+        self.inbound_server: InboundServer | None = None
+
         # Personality
         self.personality = PersonalityBuilder()
 
@@ -140,10 +144,23 @@ class Engine:
                 await self.hub_sync.sync_all()
             if self.hub_connector and self.hub_heartbeat and self.hub_heartbeat.status == HubStatus.CONNECTED:
                 await self._fetch_personality()
+
+                # Start inbound server for accepting hub-dispatched work
+                node_key = self.hub_connector.auth.load_node_key()
+                if node_key:
+                    self.inbound_server = InboundServer(
+                        host=self.config.inbound_host,
+                        port=self.config.inbound_port,
+                        node_api_key=node_key,
+                    )
+                    self.inbound_server.set_job_handler(self.handle_inbound_job)
+                    await self.inbound_server.start()
         self.skill_registry.load()
         logger.info("ARCHIE Engine started")
 
     async def stop(self) -> None:
+        if self.inbound_server:
+            await self.inbound_server.stop()
         if self.hub_heartbeat:
             await self.hub_heartbeat.stop()
         await self.server.stop()
@@ -251,6 +268,50 @@ class Engine:
             status["health"] = None
 
         return status
+
+    async def handle_inbound_job(self, job: dict) -> dict:
+        """Process a job dispatched from the hub.
+
+        Called by InboundServer when the hub sends work to this node.
+        Routes through the engine's intent parser and router.
+        """
+        task = job.get("task", "")
+        context = job.get("context", {})
+
+        try:
+            session = await self.sessions.create(working_dir=str(Path.cwd()))
+            session_id = session["id"]
+            await self.sessions.add_message(session_id, "user", f"[hub-dispatch] {task}")
+
+            intent = self.intent_parser.classify(task)
+            decision = self.dispatch_strategy.decide(intent)
+
+            # For inbound hub work, always process locally (don't re-dispatch to hub)
+            build_ctx = await self.sessions.build_context(session_id)
+            build_ctx.update(context)
+            result = await self.router.route(intent, build_ctx)
+
+            response = result.get("response", "")
+            await self.sessions.add_message(session_id, "assistant", response)
+
+            # Log job completion back to hub
+            if self.hub_connector:
+                await self.hub_connector.log_job(
+                    task=task,
+                    agent_name="ARCHIE Code Engine",
+                    result_summary=response[:200],
+                    duration_ms=0,
+                )
+
+            return {
+                "success": True,
+                "response": response,
+                "intent": intent["type"],
+                "session_id": session_id,
+            }
+        except Exception as e:
+            logger.error("Inbound job failed: %s", e)
+            return {"success": False, "error": str(e)}
 
     async def _process_chat_message(self, msg: dict) -> dict:
         content = msg.get("content", "")

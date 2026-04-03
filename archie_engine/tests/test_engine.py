@@ -3,6 +3,7 @@ import pytest_asyncio
 import json
 import asyncio
 import websockets
+from unittest.mock import AsyncMock
 from archie_engine.engine import Engine
 from archie_engine.config import EngineConfig
 
@@ -194,3 +195,50 @@ async def test_engine_has_learning_store(tmp_path):
         assert len(engine.learning_store.get_all()) == 1
     finally:
         await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_handle_inbound_job_processes_task(tmp_path):
+    """Engine should process inbound hub-dispatched jobs."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+
+    # Initialize DB for session creation
+    await engine.db.initialize()
+
+    # Mock the router to avoid needing Ollama
+    engine.router.route = AsyncMock(return_value={
+        "response": "Code looks clean, no issues found.",
+        "success": True,
+    })
+
+    result = await engine.handle_inbound_job({
+        "task": "Review main.py for security issues",
+        "context": {"files": ["main.py"]},
+        "source": "hub_dispatch",
+    })
+
+    assert result["success"] is True
+    assert "response" in result
+    assert result["response"] == "Code looks clean, no issues found."
+    await engine.db.close()
+
+
+@pytest.mark.asyncio
+async def test_handle_inbound_job_returns_error_on_failure(tmp_path):
+    """Engine should return error dict if router raises."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    await engine.db.initialize()
+
+    engine.router.route = AsyncMock(side_effect=Exception("Model unavailable"))
+
+    result = await engine.handle_inbound_job({
+        "task": "Do something",
+        "context": {},
+        "source": "hub_dispatch",
+    })
+
+    assert result["success"] is False
+    assert "error" in result
+    await engine.db.close()
