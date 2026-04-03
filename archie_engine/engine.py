@@ -173,6 +173,9 @@ class Engine:
                 "node_id": self.hub_heartbeat.node_id if self.hub_heartbeat else None,
             }
 
+        if msg_type == "platform_status":
+            return await self._get_platform_status()
+
         if msg_type == "session_create":
             working_dir = msg.get("working_dir", str(Path.cwd()))
             session = await self.sessions.create(working_dir=working_dir)
@@ -201,6 +204,53 @@ class Engine:
             return self._handle_incoming_sync(msg)
 
         return {"type": "error", "error": f"Unknown message type: {msg_type}"}
+
+    async def _get_platform_status(self) -> dict:
+        """Gather platform status data for the TUI status panel."""
+        status = {
+            "type": "platform_status",
+            "hub": self.hub_status.value,
+            "model": self.config.default_model,
+        }
+
+        if not self.hub_connector or self.hub_status.value != "connected":
+            status["agents"] = None
+            status["models"] = None
+            status["health"] = None
+            return status
+
+        # Fetch data in parallel where possible
+        try:
+            agents_data = await self.hub_connector.list_agents()
+            if "error" not in agents_data:
+                agents = agents_data.get("agents", [])
+                active = sum(1 for a in agents if a.get("shift_state") == "active")
+                total = len(agents)
+                status["agents"] = {"active": active, "total": total}
+            else:
+                status["agents"] = None
+        except Exception:
+            status["agents"] = None
+
+        try:
+            models_data = await self.hub_connector.get_model_state()
+            if "error" not in models_data:
+                status["models"] = models_data.get("models", [])
+            else:
+                status["models"] = None
+        except Exception:
+            status["models"] = None
+
+        try:
+            health_data = await self.hub_connector.health_check()
+            if "error" not in health_data:
+                status["health"] = health_data
+            else:
+                status["health"] = None
+        except Exception:
+            status["health"] = None
+
+        return status
 
     async def _process_chat_message(self, msg: dict) -> dict:
         content = msg.get("content", "")
