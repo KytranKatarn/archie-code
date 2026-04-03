@@ -64,10 +64,48 @@ async def test_server_error_returns_error(connector):
 
 @pytest.mark.asyncio
 async def test_register_node(connector):
-    mock_resp = _mock_response(200, {"node_id": "abc-123", "status": "registered"})
+    mock_resp = _mock_response(200, {"success": True, "node": {"node_id": "abc-123"}, "api_key": "key-xyz"})
+    with patch("aiohttp.ClientSession.post", return_value=mock_resp) as mock_post:
+        result = await connector.register_node(node_name="my-node", hostname="my-machine", gpu_model="RTX 3070", ram_gb=32)
+    assert result.get("success") is True
+    called_url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args.kwargs.get("url", "")
+    assert "/tools/starbase/api/nodes/register" in called_url
+
+
+@pytest.mark.asyncio
+async def test_register_node_sends_node_name(connector):
+    """register_node must send node_name field (required by hub endpoint)."""
+    mock_resp = _mock_response(200, {"success": True, "node": {"node_id": "n-1"}, "api_key": "ak-1"})
+    with patch("aiohttp.ClientSession.post", return_value=mock_resp) as mock_post:
+        await connector.register_node(node_name="test-engine")
+    sent_json = mock_post.call_args.kwargs.get("json") or {}
+    assert sent_json.get("node_name") == "test-engine"
+
+
+@pytest.mark.asyncio
+async def test_register_node_stores_credentials(connector):
+    """register_node stores node_id and api_key from the response."""
+    mock_resp = _mock_response(200, {"success": True, "node": {"node_id": "node-42"}, "api_key": "secret-key"})
     with patch("aiohttp.ClientSession.post", return_value=mock_resp):
-        result = await connector.register_node(hostname="my-machine", gpu_model="RTX 3070", ram_gb=32)
-    assert result.get("node_id") == "abc-123"
+        await connector.register_node(node_name="store-test")
+    assert connector.auth.load_node_id() == "node-42"
+    assert connector.auth.load_node_key() == "secret-key"
+
+
+@pytest.mark.asyncio
+async def test_send_heartbeat_uses_node_headers(connector):
+    """send_heartbeat must use X-Node-API-Key header, not Bearer."""
+    connector.auth.store_node_id("node-99")
+    connector.auth.store_node_key("hb-key-abc")
+    mock_resp = _mock_response(200, {"status": "alive"})
+    with patch("aiohttp.ClientSession.post", return_value=mock_resp) as mock_post:
+        result = await connector.send_heartbeat("node-99", metrics={"cpu": 42})
+    assert result.get("status") == "alive"
+    sent_headers = mock_post.call_args.kwargs.get("headers", {})
+    assert "X-Node-API-Key" in sent_headers
+    assert "Authorization" not in sent_headers
+    called_url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args.kwargs.get("url", "")
+    assert "/tools/starbase/api/nodes/node-99/heartbeat" in called_url
 
 
 @pytest.mark.asyncio

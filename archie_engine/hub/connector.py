@@ -49,21 +49,66 @@ class HubConnector:
         """Check hub health."""
         return await self.get("/api/archie/health")
 
-    async def register_node(self, hostname: str, gpu_model: str | None = None,
-                            ram_gb: int | None = None, engine_version: str = "0.1.0") -> dict:
-        """Register this engine as a node on the hub."""
-        return await self.post("/api/starbase/nodes/register", data={
-            "hostname": hostname,
+    async def register_node(self, node_name: str, hostname: str | None = None,
+                            gpu_model: str | None = None, gpu_vram_gb: float | None = None,
+                            ram_gb: float | None = None, cpu_cores: int | None = None,
+                            cpu_model: str | None = None, os_info: str | None = None,
+                            engine_version: str = "0.1.0", inbound_port: int | None = None) -> dict:
+        """Register this engine as a node on the hub.
+
+        Sends to /tools/starbase/api/nodes/register (unauthenticated).
+        Stores node_id and api_key on success.
+        """
+        import platform as _platform
+        data = {
+            "node_name": node_name,
+            "hostname": hostname or _platform.node(),
             "gpu_model": gpu_model,
+            "gpu_vram_gb": gpu_vram_gb,
             "ram_gb": ram_gb,
-            "engine_version": engine_version,
-        })
+            "cpu_cores": cpu_cores,
+            "cpu_model": cpu_model,
+            "os_info": os_info,
+            "client_version": engine_version,
+            "description": f"ARCHIE Code engine v{engine_version}",
+            "node_type": "starship",
+        }
+        if inbound_port:
+            data["port"] = inbound_port
+        url = f"{self.hub_url}/tools/starbase/api/nodes/register"
+        try:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(url, json=data, headers={"Content-Type": "application/json"}) as resp:
+                    result = await resp.json()
+                    if resp.status >= 400:
+                        return {"error": result.get("error", f"HTTP {resp.status}"), "status": resp.status}
+                    if result.get("success"):
+                        node_id = result.get("node", {}).get("node_id")
+                        api_key = result.get("api_key")
+                        if node_id:
+                            self.auth.store_node_id(node_id)
+                        if api_key:
+                            self.auth.store_node_key(api_key)
+                    return result
+        except Exception as e:
+            logger.warning("Node registration failed: %s", e)
+            return {"error": str(e), "status": 0}
 
     async def send_heartbeat(self, node_id: str, metrics: dict | None = None) -> dict:
-        """Send heartbeat to keep node registration alive."""
-        return await self.post(f"/api/starbase/nodes/{node_id}/heartbeat", data={
-            "metrics": metrics or {},
-        })
+        """Send heartbeat using X-Node-API-Key header."""
+        url = f"{self.hub_url}/tools/starbase/api/nodes/{node_id}/heartbeat"
+        try:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    url, json=metrics or {}, headers=self.auth.get_node_headers(),
+                ) as resp:
+                    result = await resp.json()
+                    if resp.status >= 400:
+                        return {"error": result.get("error", f"HTTP {resp.status}"), "status": resp.status}
+                    return result
+        except Exception as e:
+            logger.warning("Heartbeat failed: %s", e)
+            return {"error": str(e), "status": 0}
 
     async def search_knowledge(self, query: str, types: list[str] | None = None,
                                limit: int = 10) -> dict:
