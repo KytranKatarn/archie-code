@@ -3,29 +3,32 @@
 import re
 
 INTENT_PATTERNS = {
+    "knowledge_query": {
+        "keywords": ["what does", "how does", "explain", "what is", "describe", "documentation", "how to", "how do", "why does", "why is", "what are", "tell me about"],
+        "patterns": [r"\bwhat\s+(?:does|is|are|models|the|a)\b", r"\bhow\s+(?:do|does|to|did|can)\b", r"\bexplain\b", r"\bdescribe\b", r"\bwhy\s+(?:does|is|are|do)\b", r"\btell\s+me\b"],
+        "priority": 10,
+    },
+    "file_operation": {
+        "keywords": ["read", "open", "show", "cat", "find", "search", "glob", "grep", "list files", "write file", "create file", "edit file", "list all files"],
+        "patterns": [r"\bread\b.*\.\w+", r"\bopen\b.*\.\w+", r"\bshow\b.*\.\w+", r"\bfind\b.*file", r"\bgrep\b", r"\bglob\b", r"\blist\b.*\bfiles?\b"],
+        "priority": 8,
+    },
     "git_operation": {
         "keywords": ["git", "commit", "branch", "merge", "diff", "push", "pull", "rebase", "stash", "checkout", "log"],
         "patterns": [r"\bgit\b", r"\bcommit\b", r"\bbranch\b", r"\bmerge\b", r"\bdiff\b"],
-    },
-    "file_operation": {
-        "keywords": ["read", "open", "show", "cat", "find", "search", "glob", "grep", "list files", "write file", "create file", "edit file"],
-        "patterns": [r"\bread\b.*\.\w+", r"\bopen\b.*\.\w+", r"\bshow\b.*\.\w+", r"\bfind\b.*file", r"\bgrep\b", r"\bglob\b"],
-    },
-    "shell_command": {
-        "keywords": ["run", "execute", "npm", "pip", "make", "docker", "curl", "wget", "ls", "mkdir", "cd"],
-        "patterns": [r"\brun\b", r"\bexecute\b", r"\bnpm\b", r"\bpip\b", r"\bdocker\b", r"\bmake\b"],
+        "priority": 7,
     },
     "code_task": {
         "keywords": ["fix", "implement", "refactor", "add feature", "write code", "debug", "bug", "error", "build", "create function", "modify", "update code"],
         "patterns": [r"\bfix\b", r"\bimplement\b", r"\brefactor\b", r"\bbug\b", r"\bdebug\b", r"\berror\b"],
+        "priority": 6,
     },
-    "knowledge_query": {
-        "keywords": ["what does", "how does", "explain", "why", "what is", "describe", "documentation", "how to"],
-        "patterns": [r"\bwhat\s+does\b", r"\bhow\s+does\b", r"\bexplain\b", r"\bwhat\s+is\b", r"\bdescribe\b"],
+    "shell_command": {
+        "keywords": ["run", "execute", "npm", "pip", "make", "docker", "curl", "wget", "mkdir"],
+        "patterns": [r"\brun\s+\S+", r"\bexecute\s+\S+", r"\bnpm\s+\w+", r"\bpip\s+\w+", r"\bdocker\s+\w+", r"\bmake\b"],
+        "priority": 5,
     },
 }
-
-# "conversation" is the fallback — no patterns needed
 
 
 class IntentParser:
@@ -34,21 +37,26 @@ class IntentParser:
         text_lower = text.lower().strip()
         best_type = "conversation"
         best_score = 0.0
+        best_priority = 0
 
-        for intent_type, patterns in INTENT_PATTERNS.items():
+        for intent_type, config in INTENT_PATTERNS.items():
             score = 0.0
             # Keyword matching
-            keyword_hits = sum(1 for kw in patterns["keywords"] if kw in text_lower)
+            keyword_hits = sum(1 for kw in config["keywords"] if kw in text_lower)
             if keyword_hits > 0:
                 score += min(keyword_hits * 0.3, 0.6)
             # Regex pattern matching
-            regex_hits = sum(1 for p in patterns["patterns"] if re.search(p, text_lower))
+            regex_hits = sum(1 for p in config["patterns"] if re.search(p, text_lower))
             if regex_hits > 0:
                 score += min(regex_hits * 0.2, 0.4)
 
-            if score > best_score:
+            priority = config.get("priority", 0)
+
+            # Higher score wins. On tie, higher priority wins. Zero score never beats conversation.
+            if score > 0 and (score > best_score or (score == best_score and priority > best_priority)):
                 best_score = score
                 best_type = intent_type
+                best_priority = priority
 
         # Confidence: scale 0-1, conversation fallback gets low confidence
         confidence = min(best_score, 1.0) if best_type != "conversation" else 0.2

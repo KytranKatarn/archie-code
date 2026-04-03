@@ -56,3 +56,40 @@ def test_entity_extraction_files(parser):
     result = parser.classify("read config.py and main.rs")
     assert "files" in result["entities"]
     assert "config.py" in result["entities"]["files"]
+
+
+def test_classify_question_not_shell(parser):
+    """Natural language questions must NOT be classified as shell_command."""
+    result = parser.classify("What models are available on Ollama?")
+    assert result["type"] != "shell_command", f"Got {result['type']} — questions should not be shell"
+    assert result["type"] in ("knowledge_query", "conversation")
+
+
+def test_classify_how_question_is_knowledge(parser):
+    """'How do I...' questions should be knowledge_query."""
+    result = parser.classify("How do I configure the database connection?")
+    assert result["type"] == "knowledge_query"
+
+
+def test_classify_what_is_question(parser):
+    """'What is...' questions should be knowledge_query."""
+    result = parser.classify("What is the Bridge dispatcher?")
+    assert result["type"] == "knowledge_query"
+
+
+def test_classify_list_files_is_file_operation(parser):
+    """'list all files in src/' should be file_operation, not conversation."""
+    result = parser.classify("list all files in src/")
+    assert result["type"] == "file_operation"
+
+
+def test_classify_run_explicit_is_shell(parser):
+    """'run npm install' should still be shell_command."""
+    result = parser.classify("run npm install")
+    assert result["type"] == "shell_command"
+
+
+def test_classify_docker_is_shell(parser):
+    """'docker compose up' should be shell_command."""
+    result = parser.classify("docker compose up -d")
+    assert result["type"] == "shell_command"
