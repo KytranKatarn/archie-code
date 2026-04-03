@@ -1,5 +1,6 @@
 """MCP server — exposes engine tools to Claude CLI via JSON-RPC."""
 
+import asyncio
 import json
 import logging
 
@@ -47,6 +48,30 @@ class MCPToolServer:
 
         if method == "notifications/initialized":
             return ""
+
+        if method == "tools/call":
+            if self._tool_handler is None:
+                return self._error_response(msg_id, -32601, "No tool handler registered")
+            params = msg.get("params", {})
+            name = params.get("name", "")
+            arguments = params.get("arguments", {})
+            try:
+                result = self._tool_handler(name, arguments)
+                if asyncio.iscoroutine(result):
+                    loop = asyncio.new_event_loop()
+                    try:
+                        result = loop.run_until_complete(result)
+                    finally:
+                        loop.close()
+                output = result.get("output", "") if isinstance(result, dict) else str(result)
+                is_error = False
+            except Exception as exc:
+                output = str(exc)
+                is_error = True
+            return self._success_response(
+                msg_id,
+                {"content": [{"type": "text", "text": output}], "isError": is_error},
+            )
 
         return self._error_response(msg_id, -32601, f"Method not found: {method}")
 
