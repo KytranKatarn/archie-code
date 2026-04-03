@@ -20,13 +20,15 @@ class DispatchDecision:
     capability: str | None = None
 
 
-# Intents that always run locally (tool-based, no LLM needed or simple LLM)
-LOCAL_INTENTS = {"file_operation", "git_operation", "shell_command", "conversation"}
+# Tool-only intents — always local, no LLM needed
+TOOL_INTENTS = {"file_operation", "git_operation", "shell_command"}
 
-# Intents that benefit from specialist agents on the platform
-PLATFORM_INTENTS = {
-    "code_task": "code_generation",
+# LLM intents — route through Bridge when hub connected (agent-safe VRAM management)
+# Direct Ollama ONLY when hub is offline (Community tier / disconnected)
+LLM_INTENTS = {
+    "conversation": "general",
     "knowledge_query": "knowledge_search",
+    "code_task": "code_generation",
 }
 
 # Confidence below this triggers Claude escalation (when hub is available)
@@ -53,25 +55,27 @@ class DispatchStrategy:
                 capability=None,
             )
 
-        # Local intents always stay local
-        if intent_type in LOCAL_INTENTS:
+        # Tool-only intents — always local, no LLM needed
+        if intent_type in TOOL_INTENTS:
             return DispatchDecision(
                 target=DispatchTarget.LOCAL,
-                reason=f"Intent '{intent_type}' handled locally",
+                reason=f"Tool intent '{intent_type}' — handled locally (no LLM)",
             )
 
-        # Platform intents → dispatch if hub available, else fallback local
-        if intent_type in PLATFORM_INTENTS:
+        # LLM intents — route through Bridge when hub connected
+        # This ensures agents are properly assigned, VRAM managed, no model collisions
+        if intent_type in LLM_INTENTS:
             capability = self._resolve_capability(intent_type, raw_input)
             if self.hub_available:
                 return DispatchDecision(
                     target=DispatchTarget.PLATFORM,
-                    reason=f"Dispatching '{intent_type}' to platform agent",
+                    reason=f"LLM intent '{intent_type}' → Bridge (agent-safe dispatch)",
                     capability=capability,
                 )
+            # Hub offline → direct Ollama fallback
             return DispatchDecision(
                 target=DispatchTarget.LOCAL,
-                reason=f"Hub offline — handling '{intent_type}' locally",
+                reason=f"Hub offline — handling '{intent_type}' via direct Ollama",
                 capability=capability,
             )
 
@@ -83,7 +87,7 @@ class DispatchStrategy:
 
     def _resolve_capability(self, intent_type: str, raw_input: str) -> str:
         """Map intent + raw input to a specific agent capability string."""
-        base = PLATFORM_INTENTS.get(intent_type, "general")
+        base = LLM_INTENTS.get(intent_type, "general")
         if intent_type != "code_task":
             return base
 

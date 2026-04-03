@@ -19,7 +19,7 @@ class EngineConfig:
         "OLLAMA_HOST", "http://localhost:11434"
     ))
     default_model: str = field(default_factory=lambda: os.environ.get(
-        "ARCHIE_MODEL", "qwen2.5:7b"
+        "ARCHIE_MODEL", "qwen2.5-coder:7b"
     ))
 
     # Server

@@ -16,9 +16,17 @@ def strategy_offline():
     return DispatchStrategy(hub_available=False)
 
 
-def test_conversation_stays_local(strategy_connected):
-    intent = {"type": "conversation", "confidence": 0.2, "raw_input": "hello"}
+def test_conversation_routes_to_platform_when_connected(strategy_connected):
+    """Conversation needs LLM — routes through Bridge for agent-safe dispatch."""
+    intent = {"type": "conversation", "confidence": 0.3, "raw_input": "hello"}
     result = strategy_connected.decide(intent)
+    assert result.target == DispatchTarget.PLATFORM
+
+
+def test_conversation_falls_back_local_when_offline(strategy_offline):
+    """Conversation uses direct Ollama only when hub is offline."""
+    intent = {"type": "conversation", "confidence": 0.3, "raw_input": "hello"}
+    result = strategy_offline.decide(intent)
     assert result.target == DispatchTarget.LOCAL
 
 
@@ -84,7 +92,7 @@ def test_decide_returns_capability_for_code_task(strategy_connected):
 
 
 def test_decide_returns_reason(strategy_connected):
-    intent = {"type": "conversation", "confidence": 0.2, "raw_input": "hello"}
+    intent = {"type": "file_operation", "confidence": 0.6, "raw_input": "read config.py"}
     result = strategy_connected.decide(intent)
     assert isinstance(result.reason, str)
     assert len(result.reason) > 0
