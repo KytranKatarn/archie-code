@@ -1,7 +1,7 @@
 """Context bridge — structured context sharing between ARCHIE and Claude."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class ContextBridge:
@@ -20,7 +20,7 @@ class ContextBridge:
             "kb_context": kb_entries or [],
             "history": history or [],
             "branch": branch or "",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     def to_markdown(self, ctx: dict) -> str:
