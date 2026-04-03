@@ -111,6 +111,10 @@ class HubConnector:
         """Get current status of a specific agent."""
         return await self.get(f"/api/starbase/agents/{agent_id}/status")
 
+    async def get_personality(self, agent_id: int) -> dict:
+        """Get personality, mood, and relationship data for an agent."""
+        return await self.get(f"/api/bridge/agent-personality/{agent_id}")
+
     async def store_learning(self, knowledge_type: str, title: str,
                              content: str, category: str = "escalation_learning") -> dict:
         """Store a learning in the platform knowledge base via Consciousness."""

@@ -138,3 +138,29 @@ async def test_get_agent_status(connector):
     assert result.get("shift_state") == "active"
     called_url = mock_get.call_args.args[0] if mock_get.call_args.args else mock_get.call_args.kwargs.get("url", "")
     assert "/api/starbase/agents/7/status" in called_url
+
+
+@pytest.mark.asyncio
+async def test_get_personality(connector):
+    personality_data = {
+        "agent_id": 1,
+        "name": "archie",
+        "pronouns": "she/her",
+        "personality_traits": {"caring": 0.9, "empathetic": 0.92},
+        "mood": {"current": "focused", "intensity": 0.5},
+        "relationship": {"strength": 0.99},
+    }
+    mock_resp = _mock_response(200, personality_data)
+    with patch("aiohttp.ClientSession.get", return_value=mock_resp) as mock_get:
+        result = await connector.get_personality(agent_id=1)
+    assert result.get("name") == "archie"
+    assert result.get("mood", {}).get("current") == "focused"
+    called_url = mock_get.call_args.args[0] if mock_get.call_args.args else ""
+    assert "/api/bridge/agent-personality/1" in called_url
+
+
+@pytest.mark.asyncio
+async def test_get_personality_hub_down(connector):
+    with patch("aiohttp.ClientSession.get", side_effect=Exception("Connection refused")):
+        result = await connector.get_personality(agent_id=1)
+    assert "error" in result
