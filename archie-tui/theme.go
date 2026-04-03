@@ -25,4 +25,7 @@ var (
 	InputPromptStyle     = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 	ErrorStyle           = lipgloss.NewStyle().Foreground(ColorRed)
 	BannerStyle          = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	CompanionFaceStyle   = lipgloss.NewStyle().Foreground(ColorCyan)
+	CompanionNameStyle   = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	CompanionStatusStyle = lipgloss.NewStyle().Foreground(ColorDim)
 )

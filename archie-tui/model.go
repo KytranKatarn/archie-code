@@ -16,6 +16,7 @@ type model struct {
 	chat        *views.ChatView
 	statusBar   *views.StatusBar
 	skillPicker *views.SkillPicker
+	companion   *views.CompanionView
 	client      *Client
 	sessionID   string
 	width       int
@@ -38,6 +39,7 @@ func initialModel(wsURL string) model {
 		chat:        views.NewChatView(),
 		statusBar:   views.NewStatusBar(),
 		skillPicker: views.NewSkillPicker(),
+		companion:   views.NewCompanionView(),
 		client:      NewClient(wsURL),
 	}
 }
@@ -46,6 +48,9 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
 		m.connectCmd(),
+		views.BlinkCmd(),
+		views.SwayCmd(),
+		views.SleepCheckCmd(),
 	)
 }
 
@@ -138,6 +143,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			if m.connected {
 				_ = m.client.SendMessage(val, m.sessionID)
+				m.companion.SetState(views.StateThinking, "hmm, thinking...")
 			} else {
 				m.chat.AddMessage("system", "Not connected to engine")
 			}
@@ -174,6 +180,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.Width = msg.Width
 		m.skillPicker.Width = msg.Width
 		m.skillPicker.Height = msg.Height / 2
+		m.companion.Width = msg.Width
+		m.companion.Height = msg.Height
 
 	case ConnectedMsg:
 		m.connected = true
@@ -190,6 +198,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chat.AddMessage("system", fmt.Sprintf("Engine not running: %v", msg.Err))
 			m.chat.AddMessage("system", "Start engine: python -m archie_engine")
 		}
+
+	case views.BlinkTickMsg, views.BlinkEndMsg, views.SwayTickMsg, views.SleepCheckMsg:
+		cmd := m.companion.Update(msg)
+		return m, cmd
 
 	case EngineResponseMsg:
 		switch msg.Type {
@@ -211,6 +223,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "error":
 			m.chat.AddMessage("system", fmt.Sprintf("Error: %s", msg.Content))
 		}
+		// Update companion state based on engine message
+		switch msg.Type {
+		case "response":
+			if strings.Contains(msg.Content, "error") || strings.Contains(msg.Content, "Error") {
+				m.companion.SetState(views.StateConcerned, "oh no... let me retry")
+			} else {
+				m.companion.SetState(views.StateHappy, "done! ◡")
+			}
+		case "session_created":
+			m.companion.SetState(views.StateHappy, "hello! ◡")
+		case "hub_status":
+			if msg.HubStatus == "connected" {
+				m.companion.SetState(views.StateIdle, "✦ ready")
+			} else {
+				m.companion.SetState(views.StateIdle, "flying solo ✦")
+			}
+		case "error":
+			m.companion.SetState(views.StateConcerned, "oh no... let me retry")
+		}
+		if msg.DispatchTarget == "platform" {
+			m.companion.SetState(views.StateThinking, "asking the crew ✦")
+		} else if msg.DispatchTarget == "local" {
+			m.companion.SetState(views.StateThinking, "hmm, thinking...")
+		}
 		// Keep listening for next engine message
 		return m, m.listenCmd()
 	}
@@ -231,7 +267,27 @@ func (m model) View() string {
 	sections = append(sections, banner, "")
 
 	chatContent := m.chat.Render()
-	sections = append(sections, chatContent)
+
+	// Render companion overlay to the right of chat
+	companionBlock := m.companion.Render()
+	if companionBlock != "" {
+		companionWidth := 20
+		chatWidth := m.width - companionWidth - 2
+		if chatWidth < 40 {
+			chatWidth = m.width
+			companionBlock = ""
+		}
+		if companionBlock != "" {
+			chatStyled := lipgloss.NewStyle().Width(chatWidth).Render(chatContent)
+			companionStyled := lipgloss.NewStyle().Width(companionWidth).Render(companionBlock)
+			combined := lipgloss.JoinHorizontal(lipgloss.Bottom, chatStyled, companionStyled)
+			sections = append(sections, combined)
+		} else {
+			sections = append(sections, chatContent)
+		}
+	} else {
+		sections = append(sections, chatContent)
+	}
 
 	if m.skillPicker.Visible {
 		sections = append(sections, m.skillPicker.Render())
