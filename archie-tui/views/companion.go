@@ -2,9 +2,11 @@ package views
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -74,6 +76,67 @@ func (c *CompanionView) expression() (eyes, mouth string) {
 	default: // Idle
 		return "◕ ◕", "◡"
 	}
+}
+
+// BlinkCmd returns a command that triggers a blink after a random interval (3-8s).
+func BlinkCmd() tea.Cmd {
+	delay := time.Duration(3+rand.Intn(6)) * time.Second
+	return tea.Tick(delay, func(t time.Time) tea.Msg {
+		return BlinkTickMsg{}
+	})
+}
+
+// blinkEndCmd returns a command that ends the blink after 200ms.
+func blinkEndCmd() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+		return BlinkEndMsg{}
+	})
+}
+
+// SwayCmd returns a command that triggers hair sway after 10-15s.
+func SwayCmd() tea.Cmd {
+	delay := time.Duration(10+rand.Intn(6)) * time.Second
+	return tea.Tick(delay, func(t time.Time) tea.Msg {
+		return SwayTickMsg{}
+	})
+}
+
+// SleepCheckCmd returns a command that checks for sleep after 5 minutes.
+func SleepCheckCmd() tea.Cmd {
+	return tea.Tick(5*time.Minute, func(t time.Time) tea.Msg {
+		return SleepCheckMsg{}
+	})
+}
+
+// Update handles animation ticks and state transitions.
+func (c *CompanionView) Update(msg tea.Msg) tea.Cmd {
+	switch msg.(type) {
+	case BlinkTickMsg:
+		if c.State != StateSleeping {
+			c.blinking = true
+			return blinkEndCmd()
+		}
+	case BlinkEndMsg:
+		c.blinking = false
+		return BlinkCmd()
+	case SwayTickMsg:
+		c.swayRight = !c.swayRight
+		return SwayCmd()
+	case SleepCheckMsg:
+		if time.Since(c.lastInput) > 5*time.Minute && c.State != StateSleeping {
+			c.State = StateSleeping
+			c.StatusText = "zzz..."
+		}
+		return SleepCheckCmd()
+	}
+	return nil
+}
+
+// SetState sets the companion state and updates the last input time.
+func (c *CompanionView) SetState(state CompanionState, status string) {
+	c.State = state
+	c.StatusText = status
+	c.lastInput = time.Now()
 }
 
 // Render returns the full companion block as a styled string.
