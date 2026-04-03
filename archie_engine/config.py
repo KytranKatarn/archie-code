@@ -45,6 +45,14 @@ class EngineConfig:
     )))
     hub_retry_max: int = 3
 
+    # Inbound (hub dispatches work here)
+    inbound_host: str = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_INBOUND_HOST", "0.0.0.0"
+    ))
+    inbound_port: int = field(default_factory=lambda: int(os.environ.get(
+        "ARCHIE_INBOUND_PORT", "9091"
+    )))
+
     # Safety
     shell_denylist: list[str] = field(default_factory=lambda: [
         "rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:",
