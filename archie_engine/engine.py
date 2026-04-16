@@ -13,6 +13,7 @@ from archie_engine.server import EngineServer
 from archie_engine.tools import ToolRegistry
 from archie_engine.tools.file_ops import FileOpsTool
 from archie_engine.tools.git_ops import GitOpsTool
+from archie_engine.tools.qa_ops import QaOpsTool
 from archie_engine.tools.shell_ops import ShellOpsTool
 from archie_engine.hub import HubStatus, is_hub_configured
 from archie_engine.hub.auth import HubAuth
@@ -130,6 +131,10 @@ class Engine:
         registry.register(FileOpsTool(workspace=workspace))
         registry.register(GitOpsTool(workspace=workspace))
         registry.register(ShellOpsTool(workspace=workspace, config=self.config))
+        # QA ops — triggers P.R.O.B.E. test suites on the A.R.C.H.I.E. platform
+        # over HTTP. Credentials come from ARCHIE_API_PASSWORD /
+        # ARCHIE_TEST_PASSWORD env vars. See archie_engine/tools/qa_ops.py.
+        registry.register(QaOpsTool())
         return registry
 
     async def start(self) -> None:
