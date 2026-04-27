@@ -68,6 +68,8 @@ class Engine:
             {"name": "shell_exec", "description": "Execute shell command", "parameters": {"command": {"type": "string"}}},
             {"name": "search_knowledge", "description": "Search ARCHIE knowledge base", "parameters": {"query": {"type": "string"}}},
         ])
+        # Wire the tool handler so tools/call works (was unregistered — stub bug)
+        self.mcp_server.set_tool_handler(self._mcp_tool_handler)
 
         # Hub connectivity (optional) — must be set up BEFORE router so hub_connector is available
         self.hub_connector: HubConnector | None = None
@@ -124,6 +126,109 @@ class Engine:
     @property
     def is_running(self) -> bool:
         return self.server.is_running
+
+    def _mcp_tool_handler(self, tool_name: str, arguments: dict):
+        """Synchronous MCP tool handler — routes tool calls from Claude CLI.
+
+        Called by MCPToolServer.handle_message() when method == "tools/call".
+        Returns a dict with an "output" key (string).
+        """
+        import asyncio
+        import aiohttp
+        import os
+
+        platform_url = os.environ.get("ARCHIE_PLATFORM_URL", "http://192.168.1.200:3000")
+
+        async def _run():
+            if tool_name == "search_knowledge":
+                query = arguments.get("query", "")
+                # Try hub connector first (authenticated); fall back to direct platform API
+                if self.hub_connector and self.hub_status.value == "connected":
+                    try:
+                        result = await self.hub_connector.search_knowledge(query, limit=5)
+                        if "error" not in result:
+                            items = result.get("results", [])
+                            if not items:
+                                return {"output": "No results found."}
+                            lines = []
+                            for r in items[:5]:
+                                title = r.get("title", "")
+                                content = r.get("content", "")[:300]
+                                lines.append(f"- **{title}**: {content}")
+                            return {"output": "\n".join(lines)}
+                    except Exception:
+                        pass
+
+                # Direct platform API fallback (unauthenticated search endpoint)
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"{platform_url}/api/knowledge/search",
+                            params={"q": query, "limit": 5},
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                items = data.get("results", data.get("entries", []))
+                                if not items:
+                                    return {"output": "No results found."}
+                                lines = []
+                                for r in items[:5]:
+                                    title = r.get("title", r.get("content", "")[:60])
+                                    content = r.get("content", "")[:300]
+                                    lines.append(f"- **{title}**: {content}")
+                                return {"output": "\n".join(lines)}
+                            return {"output": f"Platform search returned HTTP {resp.status}"}
+                except Exception as e:
+                    return {"output": f"KB search unavailable: {e}"}
+
+            elif tool_name in ("file_read",):
+                path = arguments.get("path", "")
+                result = asyncio.get_event_loop().run_until_complete(
+                    self.tools.execute("file_ops", operation="read", path=path, working_dir=".")
+                ) if False else None
+                # Use synchronous path for file reads
+                try:
+                    from pathlib import Path as _Path
+                    text = _Path(path).read_text(errors="replace")
+                    return {"output": text[:4000]}
+                except Exception as e:
+                    return {"output": f"Error reading {path}: {e}"}
+
+            elif tool_name in ("git_status", "git_diff"):
+                import subprocess
+                sub = "status" if tool_name == "git_status" else "diff"
+                try:
+                    out = subprocess.check_output(["git", sub], text=True, timeout=10)
+                    return {"output": out or "(no output)"}
+                except Exception as e:
+                    return {"output": f"git {sub} failed: {e}"}
+
+            elif tool_name == "shell_exec":
+                import subprocess
+                cmd = arguments.get("command", "")
+                try:
+                    out = subprocess.check_output(cmd, shell=True, text=True, timeout=30,
+                                                  stderr=subprocess.STDOUT)
+                    return {"output": out[:4000] or "(no output)"}
+                except subprocess.CalledProcessError as e:
+                    return {"output": f"Exit {e.returncode}: {e.output[:2000]}"}
+                except Exception as e:
+                    return {"output": f"shell_exec failed: {e}"}
+
+            return {"output": f"Unknown tool: {tool_name}"}
+
+        # Run async code from synchronous context
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, _run())
+                    return future.result(timeout=15)
+            return loop.run_until_complete(_run())
+        except Exception as e:
+            return {"output": f"Tool handler error: {e}"}
 
     def _build_tool_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
