@@ -37,6 +37,7 @@ class InboundServer:
         app = web.Application()
         app.router.add_post("/api/dispatch", self._handle_dispatch)
         app.router.add_get("/api/health", self._handle_health)
+        app.router.add_post("/api/skills/push", self._handle_skill_push)
         return app
 
     async def start(self) -> None:
@@ -107,3 +108,46 @@ class InboundServer:
             "engine_version": ENGINE_VERSION,
             "accepting_work": self._handler is not None,
         })
+
+    async def _handle_skill_push(self, request: web.Request) -> web.Response:
+        """Handle POST /api/skills/push — write a skill file from hub."""
+        if not self._verify_auth(request):
+            return web.json_response(
+                {"success": False, "error": "Unauthorized"}, status=401
+            )
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response(
+                {"success": False, "error": "Invalid JSON"}, status=400
+            )
+
+        skill_id = data.get("skill_id")
+        content = data.get("content", "")
+        repo_slug = data.get("repo_slug", "unknown")
+        slug = data.get("slug", "unknown")
+
+        if not skill_id or not content:
+            return web.json_response(
+                {"success": False, "error": "skill_id and content required"},
+                status=400,
+            )
+
+        try:
+            from pathlib import Path
+
+            base = Path.home() / ".archie" / "skills" / "github"
+            repo_dir = base / repo_slug
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            file_path = repo_dir / f"{slug}.md"
+            file_path.write_text(content)
+
+            rel_path = f"skills/github/{repo_slug}/{slug}.md"
+            logger.info("Skill pushed: %s (id=%s)", rel_path, skill_id)
+            return web.json_response({"success": True, "path": rel_path})
+        except OSError as e:
+            logger.error("Skill push write failed: %s", e)
+            return web.json_response(
+                {"success": False, "error": str(e)}, status=500
+            )

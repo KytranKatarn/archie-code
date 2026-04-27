@@ -18,7 +18,7 @@ class SkillLoader:
             if not directory.exists():
                 continue
             source = directory.name
-            for md_file in sorted(directory.glob("*.md")):
+            for md_file in sorted(directory.glob("**/*.md")):
                 try:
                     raw = md_file.read_text()
                     skill = parse_skill(raw, source=source, file_path=str(md_file))

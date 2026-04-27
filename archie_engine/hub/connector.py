@@ -137,6 +137,31 @@ class HubConnector:
         """Get available skills from the hub."""
         return await self.get("/api/starbase/skills")
 
+    async def sync_skills(
+        self, since: str | None = None, limit: int = 50
+    ) -> dict:
+        """Fetch tested skills for sync from hub.
+
+        Args:
+            since: ISO timestamp — only skills newer than this
+            limit: max skills per response
+        """
+        params = {"limit": str(limit)}
+        if since:
+            params["since"] = since
+        return await self.get(
+            "/tools/consciousness/api/github/skills/sync", params=params
+        )
+
+    async def confirm_skill_sync(
+        self, skill_ids: list[int], node_id: str = "hub"
+    ) -> dict:
+        """Confirm successful skill installations to hub."""
+        return await self.post(
+            "/tools/consciousness/api/github/skills/sync-confirm",
+            data={"skill_ids": skill_ids, "node_id": node_id},
+        )
+
     async def get_model_state(self) -> dict:
         """Get current model load state from the hub."""
         return await self.get("/api/starbase/models")
