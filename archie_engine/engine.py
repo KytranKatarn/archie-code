@@ -159,12 +159,14 @@ class Engine:
                     except Exception:
                         pass
 
-                # Direct platform API fallback (unauthenticated search endpoint)
+                # Internal API fallback (INTERNAL_API_KEY auth)
+                internal_key = os.getenv("INTERNAL_API_KEY", "")
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(
-                            f"{platform_url}/api/knowledge/search",
+                            f"{platform_url}/api/internal/knowledge/search",
                             params={"q": query, "limit": 5},
+                            headers={"Authorization": f"Bearer {internal_key}"},
                             timeout=aiohttp.ClientTimeout(total=10),
                         ) as resp:
                             if resp.status == 200:

@@ -48,7 +48,7 @@ fi
 
 echo ""
 echo "Done! Usage:"
-echo "  1. Start engine:  python -m archie_engine"
+echo "  1. Start engine:  python3 -m archie_engine"
 echo "  2. Launch TUI:    archie-code"
 echo ""
 echo "Ensure $INSTALL_DIR is in your PATH."
