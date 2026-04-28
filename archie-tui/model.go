@@ -236,7 +236,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connected = false
 		if msg.Err != nil {
 			m.chat.AddMessage("system", fmt.Sprintf("Engine not running: %v", msg.Err))
-			m.chat.AddMessage("system", "Start engine: python -m archie_engine")
+			m.chat.AddMessage("system", "Start engine: python3 -m archie_engine")
 		}
 
 	case views.BlinkTickMsg, views.BlinkEndMsg, views.SwayTickMsg, views.SleepCheckMsg:
