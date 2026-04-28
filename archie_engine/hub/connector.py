@@ -112,10 +112,9 @@ class HubConnector:
 
     async def search_knowledge(self, query: str, types: list[str] | None = None,
                                limit: int = 10) -> dict:
-        """Search the hub knowledge base."""
-        return await self.post("/api/archie/search", data={
-            "query": query,
-            "types": types,
+        """Search the hub knowledge base via the internal knowledge endpoint."""
+        return await self.get("/api/internal/knowledge/search", params={
+            "q": query,
             "limit": limit,
         })
 
