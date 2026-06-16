@@ -39,8 +39,14 @@ class HubAuth:
         return self.key_file.exists()
 
     def get_headers(self) -> dict:
-        """Get auth headers for HTTP requests."""
-        key = self.load_key()
+        """Get auth headers for HTTP requests.
+
+        Key resolution order: stored key file, then the ARCHIE_HUB_API_KEY
+        env var. The hub's internal endpoints authenticate with
+        `Authorization: Bearer <INTERNAL_API_KEY>`, so setting that env var
+        (e.g. in docker-compose) is enough — no key file needed.
+        """
+        key = self.load_key() or os.environ.get("ARCHIE_HUB_API_KEY", "")
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
