@@ -118,8 +118,9 @@ async def test_health_check(connector):
 
 @pytest.mark.asyncio
 async def test_search_knowledge(connector):
+    # search_knowledge issues a GET (not POST) — patch the verb it actually uses.
     mock_resp = _mock_response(200, {"results": [{"content": "test"}]})
-    with patch("aiohttp.ClientSession.post", return_value=mock_resp):
+    with patch("aiohttp.ClientSession.get", return_value=mock_resp):
         result = await connector.search_knowledge("auth middleware")
     assert len(result.get("results", [])) > 0
 
