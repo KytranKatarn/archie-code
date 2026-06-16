@@ -112,22 +112,44 @@ class HubConnector:
 
     async def search_knowledge(self, query: str, types: list[str] | None = None,
                                limit: int = 10) -> dict:
-        """Search the hub knowledge base."""
-        return await self.post("/api/archie/search", data={
-            "query": query,
-            "types": types,
+        """Search the hub knowledge base via the internal knowledge endpoint."""
+        return await self.get("/api/internal/knowledge/search", params={
+            "q": query,
             "limit": limit,
         })
 
     async def dispatch(self, prompt: str, model: str | None = None,
                        agent_target: str | None = None, user_context: dict | None = None) -> dict:
-        """Dispatch a task through the hub's Bridge."""
-        return await self.post("/api/archie/chat", data={
-            "prompt": prompt,
-            "model": model,
-            "agent_target": agent_target,
-            "user_context": user_context or {},
+        """Delegate a task to the hub's agent team via the internal delegation
+        surface (the modern external→DHQ path; Starbase's /api/archie/chat is gone).
+
+        Non-blocking: submits the task and returns immediately with the task id.
+        The Department-HQ dispatcher routes it (welfare/cost/agent selection) and
+        the result streams to the platform's Live Dispatch feed + work_notes.
+        Returns the router contract {response, agent_name, model} or {error}.
+        """
+        # agent_target arrives as "capability:<cap>" from the router; map it.
+        capability = "code"
+        if agent_target:
+            capability = agent_target.split(":", 1)[1] if agent_target.startswith("capability:") else agent_target
+            capability = capability or "code"
+        result = await self.post("/api/internal/delegation/submit", data={
+            "capability": capability,
+            "reason": prompt,
+            "args": user_context or {},
         })
+        if "error" in result:
+            return result
+        task_id = result.get("task_id")
+        return {
+            "response": (
+                f"Delegated to the A.R.C.H.I.E. team as task #{task_id} "
+                f"(capability: {capability}). Track it in the Live Dispatch feed."
+            ),
+            "agent_name": "A.R.C.H.I.E.",
+            "model": "delegated",
+            "task_id": task_id,
+        }
 
     async def list_agents(self) -> dict:
         """List available agents on the hub."""
