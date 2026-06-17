@@ -78,3 +78,18 @@ def test_config_defaults_to_local_only(monkeypatch):
 def test_config_allow_cloud_env_opens_escalation(monkeypatch):
     monkeypatch.setenv("ARCHIE_ENGINE_ALLOW_CLOUD", "1")
     assert EngineConfig().local_only is False
+
+
+def test_config_truthy_allow_cloud_values_open_escalation(monkeypatch):
+    # case-insensitive truthy values open cloud escalation
+    for val in ("1", "true", "TRUE", "yes", "Yes"):
+        monkeypatch.setenv("ARCHIE_ENGINE_ALLOW_CLOUD", val)
+        assert EngineConfig().local_only is False, val
+
+
+def test_config_invalid_allow_cloud_value_fails_safe_to_local(monkeypatch):
+    # any falsy / garbage / unset value MUST keep the engine strictly local
+    # (fail-safe: never silently open cloud on a typo'd env var)
+    for val in ("0", "false", "no", "off", "maybe", "", "  "):
+        monkeypatch.setenv("ARCHIE_ENGINE_ALLOW_CLOUD", val)
+        assert EngineConfig().local_only is True, val
