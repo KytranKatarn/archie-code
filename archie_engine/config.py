@@ -45,6 +45,14 @@ class EngineConfig:
     )))
     hub_retry_max: int = 3
 
+    # Dispatch policy — strictly local by default (ADR-003, decision #4): build
+    # inference routes through DHQ on the local cluster (PLATFORM target); the
+    # engine never escalates to paid cloud. Set ARCHIE_ENGINE_ALLOW_CLOUD=1 to
+    # re-enable Claude/cloud escalation later.
+    local_only: bool = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_ENGINE_ALLOW_CLOUD", ""
+    ).lower() not in ("1", "true", "yes"))
+
     # Inbound (hub dispatches work here)
     inbound_host: str = field(default_factory=lambda: os.environ.get(
         "ARCHIE_INBOUND_HOST", "0.0.0.0"
