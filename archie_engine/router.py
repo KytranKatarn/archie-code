@@ -128,13 +128,9 @@ class CommandRouter:
         match = re.search(r"\bgit\s+(\w+)", raw_input, re.IGNORECASE)
         subcommand = match.group(1) if match else "status"
 
-        tool_call = {"tool": "git_ops", "subcommand": subcommand}
+        tool_call = {"tool": "git_ops", "operation": subcommand}
 
-        result = await self.tools.execute(
-            "git_ops",
-            subcommand=subcommand,
-            working_dir=context.get("working_dir", "."),
-        )
+        result = await self.tools.execute("git_ops", operation=subcommand)
 
         return {
             "success": result.success,
@@ -150,11 +146,7 @@ class CommandRouter:
 
         tool_call = {"tool": "shell_ops", "command": command}
 
-        result = await self.tools.execute(
-            "shell_ops",
-            command=command,
-            working_dir=context.get("working_dir", "."),
-        )
+        result = await self.tools.execute("shell_ops", command=command)
 
         return {
             "success": result.success,
