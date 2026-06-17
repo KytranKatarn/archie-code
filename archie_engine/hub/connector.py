@@ -189,13 +189,28 @@ class HubConnector:
         return await self.get("/api/starbase/models")
 
     async def log_job(self, task: str, agent_name: str,
-                      result_summary: str, duration_ms: int) -> dict:
-        """Log a completed job to the hub for activity tracking."""
-        return await self.post("/api/archie/jobs", data={
+                      result_summary: str, duration_ms: int,
+                      success: bool = True, model: str | None = None,
+                      prompt_tokens: int = 0, completion_tokens: int = 0,
+                      files_changed: list | None = None,
+                      branch: str | None = None) -> dict:
+        """Log a completed engine build run to the hub → task_execution_log (#4257).
+
+        Posts to /api/internal/engine/telemetry (the old /api/archie/jobs never
+        existed → 404). Uses the connector's existing auth — same INTERNAL_API_KEY
+        bearer the engine uses for /api/internal/delegation/submit.
+        """
+        return await self.post("/api/internal/engine/telemetry", data={
             "task": task,
             "agent_name": agent_name,
             "result_summary": result_summary,
             "duration_ms": duration_ms,
+            "success": success,
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "files_changed": files_changed,
+            "branch": branch,
             "source": "archie-code",
         })
 
