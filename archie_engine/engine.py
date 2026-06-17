@@ -457,6 +457,9 @@ class Engine:
             dispatch_fn=_plan_dispatch,
             connector=self.hub_connector,
             model=self.config.default_model,
+            max_files=self.config.build_max_files,
+            test_command=self.config.build_test_command,
+            test_timeout=self.config.build_test_timeout,
         )
         result = await loop.run(task, base=base)
         await loop.emit_telemetry(result)
