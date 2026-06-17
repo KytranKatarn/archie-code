@@ -7,6 +7,7 @@ import time
 from archie_engine.tools import ToolRegistry
 from archie_engine.inference import InferenceClient
 from archie_engine.personality import PersonalityBuilder
+from archie_engine.scope_guard import is_in_scope
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +16,16 @@ class CommandRouter:
     def __init__(self, tools: ToolRegistry, inference: InferenceClient,
                  default_model: str = "archie:7b",
                  hub_connector=None,
-                 personality_builder: PersonalityBuilder | None = None):
+                 personality_builder: PersonalityBuilder | None = None,
+                 scope_config: dict | None = None):
         self.tools = tools
         self.inference = inference
         self.default_model = default_model
         self.hub_connector = hub_connector
         self.personality = personality_builder or PersonalityBuilder()
+        # Deny-by-default scope for engine file mutations (ADR-003). None → the
+        # DEFAULT_ARCHIE_CODE_SCOPE in scope_guard (archie-code source/tests/docs).
+        self.scope_config = scope_config
 
     async def _enrich_with_kb(self, query: str, limit: int = 3) -> str:
         """Search KB for relevant context when hub is connected. Returns context string or empty."""
@@ -94,7 +99,21 @@ class CommandRouter:
 
         tool_call = {"tool": "file_ops", "operation": operation, "path": path}
 
-        result = await self.tools.execute("file_ops", operation=operation, path=path, working_dir=context.get("working_dir", "."))
+        # Deny-by-default scope guard (ADR-003): the engine may only MUTATE files
+        # inside its allowed scope. read/glob/grep stay bounded by the tool's own
+        # workspace-escape check; write/edit must additionally pass is_in_scope.
+        if operation in ("write", "edit") and not is_in_scope(path, self.scope_config):
+            return {
+                "success": False,
+                "response": (
+                    f"Denied by scope guard: '{path}' is outside the engine's "
+                    "writable scope (archie-code source/tests/docs only)."
+                ),
+                "tool_calls": [tool_call],
+                "model_used": None,
+            }
+
+        result = await self.tools.execute("file_ops", operation=operation, path=path)
 
         return {
             "success": result.success,

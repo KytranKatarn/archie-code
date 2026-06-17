@@ -1,3 +1,15 @@
 __pycache__/
 *.pyc
 archie-tui/archie-code
+
+# secrets & local env — never commit (.env holds the hub API key)
+.env
+.env.local
+*.key
+*.pem
+
+# virtualenv, build, and test artifacts
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
