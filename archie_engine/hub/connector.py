@@ -214,6 +214,18 @@ class HubConnector:
             "source": "archie-code",
         })
 
+    async def dhq_complete(self, prompt: str, system_prompt: str | None = None) -> str:
+        """Synchronous, strictly-local DHQ completion — for the build loop's plan
+        step (#4256). POSTs to /api/internal/dhq/chat, which routes through the
+        dispatcher (welfare + cost + cold-load queue, local_only) and returns the
+        reply text synchronously. This is the DHQ path — NOT a direct Ollama call.
+        """
+        resp = await self.post("/api/internal/dhq/chat",
+                               data={"prompt": prompt, "system_prompt": system_prompt})
+        if isinstance(resp, dict):
+            return resp.get("response", "") or ""
+        return ""
+
     async def get_agent_status(self, agent_id: int) -> dict:
         """Get current status of a specific agent."""
         return await self.get(f"/api/starbase/agents/{agent_id}/status")

@@ -431,6 +431,46 @@ class Engine:
             logger.error("Inbound job failed: %s", e)
             return {"success": False, "error": str(e)}
 
+    async def run_build(self, task: str, base: str = "main") -> dict:
+        """Run one autonomous coordinate→build→test→deploy cycle (#4256).
+
+        The plan (coordinate) step routes through DHQ (strictly local) when the
+        hub is connected, else falls back to the engine's local inference. Build
+        applies are scope-guarded; the loop opens a PR for F.O.R.G.E. and NEVER
+        merges.
+        """
+        from archie_engine.build_loop import BuildLoop
+
+        async def _plan_dispatch(prompt: str) -> str:
+            if self.hub_connector and self.hub_status.value == "connected":
+                return await self.hub_connector.dhq_complete(prompt)
+            # hub offline → strictly-local fallback (engine's own Ollama)
+            resp = await self.inference.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.config.default_model,
+            )
+            msg = resp.get("message", {}) if isinstance(resp, dict) else {}
+            return msg.get("content", "") if isinstance(msg, dict) else ""
+
+        loop = BuildLoop(
+            tools=self.tools,
+            dispatch_fn=_plan_dispatch,
+            connector=self.hub_connector,
+            model=self.config.default_model,
+        )
+        result = await loop.run(task, base=base)
+        await loop.emit_telemetry(result)
+        return {
+            "success": result.success,
+            "stage": result.stage,
+            "error": result.error,
+            "branch": result.branch,
+            "files": result.files,
+            "pr_url": result.pr_url,
+            "pr_number": result.pr_number,
+            "duration_ms": result.duration_ms,
+        }
+
     async def _process_chat_message(self, msg: dict) -> dict:
         content = msg.get("content", "")
         session_id = msg.get("session_id")

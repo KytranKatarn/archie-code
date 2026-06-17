@@ -55,3 +55,29 @@ async def test_log_job_backward_compatible_with_original_4_args():
     assert captured["path"] == "/api/internal/engine/telemetry"
     assert captured["data"]["success"] is True  # default applied
     assert captured["data"]["prompt_tokens"] == 0
+
+
+async def test_dhq_complete_posts_to_dhq_chat_and_returns_reply():
+    c = _conn()
+    captured = {}
+
+    async def fake_post(path, data=None):
+        captured["path"] = path
+        captured["data"] = data
+        return {"success": True, "response": '[{"path":"archie_engine/x.py"}]'}
+
+    c.post = fake_post
+    out = await c.dhq_complete("plan this task")
+    assert captured["path"] == "/api/internal/dhq/chat"  # the synchronous DHQ path, not direct Ollama
+    assert captured["data"]["prompt"] == "plan this task"
+    assert out == '[{"path":"archie_engine/x.py"}]'
+
+
+async def test_dhq_complete_empty_when_no_response():
+    c = _conn()
+
+    async def fake_post(path, data=None):
+        return {"success": False}
+
+    c.post = fake_post
+    assert await c.dhq_complete("x") == ""
