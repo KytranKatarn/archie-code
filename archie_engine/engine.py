@@ -13,6 +13,7 @@ from archie_engine.server import EngineServer
 from archie_engine.tools import ToolRegistry
 from archie_engine.tools.file_ops import FileOpsTool
 from archie_engine.tools.git_ops import GitOpsTool
+from archie_engine.tools.github_ops import GitHubOpsTool
 from archie_engine.tools.qa_ops import QaOpsTool
 from archie_engine.tools.shell_ops import ShellOpsTool
 from archie_engine.hub import HubStatus, is_hub_configured
@@ -239,6 +240,9 @@ class Engine:
         workspace = Path.cwd()
         registry.register(FileOpsTool(workspace=workspace))
         registry.register(GitOpsTool(workspace=workspace))
+        # Open PRs for F.O.R.G.E. review — branch+PR-only, never merges (#4255).
+        # Token from ARCHIE_GITHUB_TOKEN/GITHUB_TOKEN; empty → writes fail closed.
+        registry.register(GitHubOpsTool())
         registry.register(ShellOpsTool(workspace=workspace, config=self.config))
         # QA ops — triggers P.R.O.B.E. test suites on the A.R.C.H.I.E. platform
         # over HTTP. Credentials come from ARCHIE_API_PASSWORD /
