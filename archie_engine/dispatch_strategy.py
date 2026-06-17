@@ -38,8 +38,12 @@ ESCALATION_THRESHOLD = 0.2
 class DispatchStrategy:
     """Decide where to route each intent: local engine, platform Bridge, or Claude."""
 
-    def __init__(self, hub_available: bool = False):
+    def __init__(self, hub_available: bool = False, local_only: bool = True):
         self.hub_available = hub_available
+        # Strictly-local (ADR-003, decision #4): when True, never escalate to
+        # CLAUDE/cloud — LLM work routes to PLATFORM (DHQ local cluster) or, when
+        # the hub is offline, direct-Ollama fallback.
+        self.local_only = local_only
 
     def decide(self, intent: dict) -> DispatchDecision:
         """Return a DispatchDecision for the given classified intent."""
@@ -47,8 +51,10 @@ class DispatchStrategy:
         confidence = intent.get("confidence", 0.2)
         raw_input = intent.get("raw_input", "")
 
-        # Low confidence + hub available → escalate to Claude
-        if confidence < ESCALATION_THRESHOLD and self.hub_available:
+        # Low confidence + hub available → escalate to Claude (cloud).
+        # Suppressed under strictly-local (ADR-003, decision #4): fall through to
+        # PLATFORM (DHQ local cluster) rather than reaching for paid cloud.
+        if confidence < ESCALATION_THRESHOLD and self.hub_available and not self.local_only:
             return DispatchDecision(
                 target=DispatchTarget.CLAUDE,
                 reason=f"Low confidence ({confidence:.2f}) — escalating to Claude",

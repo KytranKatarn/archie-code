@@ -106,9 +106,11 @@ class Engine:
             personality_builder=self.personality,
         )
 
-        # Dispatch strategy
+        # Dispatch strategy — strictly local by default (ADR-003): build
+        # inference routes through DHQ on the local cluster, no cloud escalation.
         self.dispatch_strategy = DispatchStrategy(
-            hub_available=is_hub_configured(config)
+            hub_available=is_hub_configured(config),
+            local_only=config.local_only,
         )
 
         # State sync for Claude collaboration
