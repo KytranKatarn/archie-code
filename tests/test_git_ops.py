@@ -125,6 +125,24 @@ async def test_clone_requires_url(repo):
     assert not r.success
 
 
+async def test_clone_denies_lookalike_repo(repo):
+    # exact host/owner/repo match — a look-alike must NOT slip through a substring check
+    r = await _tool(repo).execute(operation="clone",
+                                  url="https://github.com/KytranKatarn/archie-code-evil.git")
+    assert not r.success
+    assert "allowlist" in r.error.lower()
+
+
+def test_repo_identity_normalizes_and_rejects_lookalikes():
+    from archie_engine.tools.git_ops import _repo_identity, ALLOWED_CLONE_REPOS
+    for u in ("https://github.com/KytranKatarn/archie-code.git",
+              "git@github.com:KytranKatarn/archie-code.git",
+              "https://github.com/kytrankatarn/archie-code"):
+        assert _repo_identity(u) in ALLOWED_CLONE_REPOS, u
+    assert _repo_identity("https://github.com/KytranKatarn/archie-code-evil") not in ALLOWED_CLONE_REPOS
+    assert _repo_identity("not-a-url") is None
+
+
 # --- router #4253: git ops dispatched with operation= (not subcommand=), no working_dir ---
 
 class _RecordingGitTool(BaseTool):

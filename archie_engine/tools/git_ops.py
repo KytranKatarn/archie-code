@@ -23,8 +23,28 @@ from archie_engine.scope_guard import is_in_scope
 PROTECTED_BRANCHES = {"main", "master", "release", "production"}
 
 # Deny-by-default clone allowlist (ADR-003): the engine's autonomous loop is
-# scoped to its own repo. Substring match on the normalized URL.
+# scoped to its own repo. Matched by EXACT host/owner/repo — NOT substring (a
+# substring check would let a look-alike like "archie-code-evil" through).
 ALLOWED_CLONE_REPOS = ("github.com/kytrankatarn/archie-code",)
+
+
+def _repo_identity(url: str) -> str | None:
+    """Reduce a clone URL to its canonical ``host/owner/repo`` (lowercased), or
+    None if it doesn't look like a repo URL. Used for exact allowlist matching."""
+    s = (url or "").strip().lower()
+    for pre in ("https://", "http://", "ssh://"):
+        if s.startswith(pre):
+            s = s[len(pre):]
+            break
+    if s.startswith("git@"):
+        s = s[4:]
+    s = s.replace(":", "/").strip("/")
+    if s.endswith(".git"):
+        s = s[:-4]
+    parts = [p for p in s.split("/") if p]
+    if len(parts) < 3:
+        return None
+    return "/".join(parts[:3])
 
 
 class GitOpsTool(BaseTool):
@@ -118,6 +138,7 @@ class GitOpsTool(BaseTool):
     # ------------------------------------------------------------------
 
     async def _add(self, paths) -> ToolResult:
+        """Stage explicit, in-scope paths only (deny-by-default; never stages all)."""
         # Explicit paths only — never `git add -A`/`.` (could stage out-of-scope
         # files that already exist on disk). Each path is scope-checked.
         if not paths:
@@ -161,6 +182,7 @@ class GitOpsTool(BaseTool):
             return ToolResult(success=False, error=f"Unknown branch action: {action}")
 
     async def _checkout(self, ref) -> ToolResult:
+        """Check out an existing branch or commit ref in the workspace."""
         if not ref:
             return ToolResult(success=False, error="checkout requires a 'ref' (branch or commit)")
         stdout, stderr, rc = await self._run_git("checkout", ref)
@@ -169,6 +191,7 @@ class GitOpsTool(BaseTool):
         return ToolResult(success=True, output=(stdout + stderr).strip())
 
     async def _pull(self, remote: str = "origin", branch: str = None) -> ToolResult:
+        """Fast-forward-only pull (never auto-merges divergent history)."""
         # Fast-forward only — never auto-merge divergent history.
         args = ["pull", "--ff-only", remote]
         if branch:
@@ -179,6 +202,7 @@ class GitOpsTool(BaseTool):
         return ToolResult(success=True, output=(stdout + stderr).strip())
 
     async def _push(self, remote: str = "origin", set_upstream: bool = True) -> ToolResult:
+        """Push the CURRENT feature branch upstream — refuses protected branches."""
         branch = await self._current_branch()
         if not branch or branch == "HEAD":
             return ToolResult(success=False, error="cannot determine current branch (detached HEAD?)")
@@ -201,12 +225,10 @@ class GitOpsTool(BaseTool):
         return ToolResult(success=True, output=(stdout + stderr).strip())
 
     async def _clone(self, url: str, dest: str = None) -> ToolResult:
+        """Clone a repo into the workspace — allowlisted by EXACT host/owner/repo."""
         if not url:
             return ToolResult(success=False, error="clone requires a 'url'")
-        norm = url.lower().replace("https://", "").replace("git@", "").replace(":", "/").rstrip("/")
-        if norm.endswith(".git"):
-            norm = norm[:-4]
-        if not any(allowed in norm for allowed in ALLOWED_CLONE_REPOS):
+        if _repo_identity(url) not in ALLOWED_CLONE_REPOS:
             return ToolResult(
                 success=False,
                 error=f"Denied: clone allowlist permits only {ALLOWED_CLONE_REPOS}",
@@ -220,6 +242,7 @@ class GitOpsTool(BaseTool):
         return ToolResult(success=True, output=(stdout + stderr).strip())
 
     async def _worktree(self, action: str = "list", path: str = None, branch: str = None) -> ToolResult:
+        """Manage git worktrees (list / add / remove) for isolated builds."""
         if action == "list":
             stdout, stderr, rc = await self._run_git("worktree", "list")
             if rc != 0:
