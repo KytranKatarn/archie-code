@@ -53,6 +53,18 @@ class EngineConfig:
         "ARCHIE_ENGINE_ALLOW_CLOUD", ""
     ).lower() not in ("1", "true", "yes"))
 
+    # Build loop (#4256) — externally configurable (env) instead of hard-coded.
+    # ADR-003: change set capped at ~25 files; deploy only on a green test run.
+    build_max_files: int = field(default_factory=lambda: int(os.environ.get(
+        "ARCHIE_ENGINE_MAX_FILES", "25"
+    )))
+    build_test_command: str = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_ENGINE_TEST_COMMAND", "python -m pytest -q"
+    ))
+    build_test_timeout: int = field(default_factory=lambda: int(os.environ.get(
+        "ARCHIE_ENGINE_TEST_TIMEOUT", "600"
+    )))
+
     # Inbound (hub dispatches work here)
     inbound_host: str = field(default_factory=lambda: os.environ.get(
         "ARCHIE_INBOUND_HOST", "0.0.0.0"
