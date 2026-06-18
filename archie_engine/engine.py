@@ -526,46 +526,45 @@ class Engine:
             "target": target,
         }
 
-    async def pull_and_build(self, limit: int = 50) -> dict:
-        """#380 pull-work: pull the highest-priority IN-SCOPE platform proposal from
-        the Repair Bay queue (#4259) and build a fix as a PR against archie-platform.
+    async def pull_and_build(self, limit: int = 100) -> dict:
+        """#380 pull-work: pull the highest-severity IN-SCOPE platform issue from the
+        Repair Bay queue (#4259) and build a fix as a PR against archie-platform.
 
-        Only proposals whose target file is under PLATFORM_SCOPE are buildable — core
-        platform issues are filtered out (the engine's safe surface = codex's
-        Applications/Concepts modules). No in-scope item → clean no-op. The engine
-        opens a PR and NEVER merges; engine-authored PRs are also blocked from
-        platform-side auto-merge. On-demand (no autonomous scheduler — that's a
-        separate, owner-gated opt-in).
+        Sources the ISSUES queue — the per-file findings that carry a file_path. (The
+        proposals queue is module-level audit summaries without one.) Only issues whose
+        file is under PLATFORM_SCOPE are buildable — core-platform findings are filtered
+        out (the engine's safe surface = codex's Applications/Concepts modules). No
+        in-scope item → clean no-op. The engine opens a PR and NEVER merges;
+        engine-authored PRs are also blocked from platform-side auto-merge. On-demand
+        (no autonomous scheduler — a separate, owner-gated opt-in).
         """
         from archie_engine.scope_guard import is_in_scope, PLATFORM_SCOPE
 
         if not self.hub_connector:
             return {"success": False, "error": "no hub connector"}
-        resp = await self.hub_connector.get_repair_proposals(status="proposed")
+        resp = await self.hub_connector.get_repair_issues(status="open", limit=limit)
         if not isinstance(resp, dict) or "error" in resp:
             return {"success": False, "error": f"queue read failed: {resp}"}
-        proposals = resp.get("proposals", []) or []
+        issues = resp.get("issues", []) or []
 
-        in_scope = [p for p in proposals if _proposal_path(p) and is_in_scope(_proposal_path(p), PLATFORM_SCOPE)]
+        in_scope = [i for i in issues if i.get("file_path") and is_in_scope(i["file_path"], PLATFORM_SCOPE)]
         if not in_scope:
-            logger.info(
-                "[pull_and_build] no in-scope platform proposals (%d in queue) — no-op",
-                len(proposals),
-            )
-            return {"success": True, "skipped": True, "reason": "no in-scope proposal",
-                    "queue_size": len(proposals)}
+            logger.info("[pull_and_build] no in-scope platform issues (%d in queue) — no-op", len(issues))
+            return {"success": True, "skipped": True, "reason": "no in-scope issue",
+                    "queue_size": len(issues)}
 
-        in_scope.sort(key=lambda p: -(p.get("priority") or 0))
+        _sev = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+        in_scope.sort(key=lambda i: -_sev.get((i.get("severity") or "").lower(), 0))
         picked = in_scope[0]
-        fp = _proposal_path(picked)
+        fp = picked["file_path"]
         module = _module_from_path(fp)
-        task = _format_proposal_task(picked, fp)
+        task = _format_issue_task(picked, fp)
         logger.info(
-            "[pull_and_build] building proposal #%s (%s, module=%s) → archie-platform",
-            picked.get("id"), fp, module,
+            "[pull_and_build] building issue #%s (%s, module=%s, sev=%s) → archie-platform",
+            picked.get("id"), fp, module, picked.get("severity"),
         )
         result = await self.run_build(task, target="archie-platform", module=module)
-        result["proposal_id"] = picked.get("id")
+        result["issue_id"] = picked.get("id")
         result["file_path"] = fp
         return result
 
@@ -708,18 +707,6 @@ class Engine:
 # Pull-work helpers (#380) — pure, module-level so they're trivially testable
 # ----------------------------------------------------------------------
 
-def _proposal_path(proposal: dict) -> str:
-    """Best-effort target file path for a Repair Bay proposal (column or metadata)."""
-    if not isinstance(proposal, dict):
-        return ""
-    fp = proposal.get("file_path")
-    if not fp:
-        md = proposal.get("metadata")
-        if isinstance(md, dict):
-            fp = md.get("file_path")
-    return fp or ""
-
-
 def _module_from_path(path: str) -> str | None:
     """platform_v2/tools/<module>/... -> '<module>' (drives the loop-closer reverify)."""
     parts = (path or "").split("/")
@@ -728,15 +715,18 @@ def _module_from_path(path: str) -> str | None:
     return None
 
 
-def _format_proposal_task(proposal: dict, file_path: str) -> str:
-    """Turn a Repair Bay proposal into a build task for the engine's plan step."""
-    title = proposal.get("title") or "Fix Repair Bay finding"
-    desc = (proposal.get("description") or "").strip()
+def _format_issue_task(issue: dict, file_path: str) -> str:
+    """Turn a Repair Bay code issue (file-level finding) into a build task."""
+    msg = issue.get("message") or "code issue"
+    suggestion = (issue.get("suggestion") or "").strip()
+    severity = issue.get("severity") or ""
+    line = issue.get("line_number")
+    loc = f" (line {line})" if line else ""
     out = (
-        "Fix this Repair Bay finding in the A.R.C.H.I.E. platform. Make the MINIMAL, "
-        "correct change and only edit files in this module.\n\n"
-        f"File: {file_path}\nFinding: {title}\n"
+        "Fix this code issue in the A.R.C.H.I.E. platform. Make the MINIMAL, correct "
+        "change and only edit this file.\n\n"
+        f"File: {file_path}{loc}\nSeverity: {severity}\nIssue: {msg}\n"
     )
-    if desc:
-        out += f"\nDetails:\n{desc}\n"
+    if suggestion:
+        out += f"Suggestion: {suggestion}\n"
     return out
