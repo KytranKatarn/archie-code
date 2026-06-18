@@ -47,6 +47,9 @@ class BuildResult:
     pr_url: str | None = None
     pr_number: int | None = None
     duration_ms: int = 0
+    test_output: str = ""              # captured test command output (for build-result reporting)
+    module: str | None = None         # target platform Code-Health module, if any (drives reverify)
+    reverify: dict | None = None      # loop-closer verdict {modules,fixed,still_open,details}
 
     def fail(self, stage: str, error: str) -> "BuildResult":
         self.stage = stage
@@ -83,10 +86,12 @@ class BuildLoop:
     # Public entry point
     # ------------------------------------------------------------------
 
-    async def run(self, task: str, base: str = "main", branch: str | None = None) -> BuildResult:
+    async def run(self, task: str, base: str = "main", branch: str | None = None,
+                  module: str | None = None) -> BuildResult:
         start = time.monotonic()
         branch = branch or _branch_name(task)
         result = BuildResult(task=task, branch=branch)
+        result.module = module  # target platform Code-Health module → drives the loop-closer reverify
 
         if base in {"", None}:
             base = "main"
@@ -129,6 +134,7 @@ class BuildLoop:
         # 4. test — deploy ONLY on green
         tr = await self.tools.execute("shell_ops", command=self.test_command, timeout=self.test_timeout)
         result.tests_passed = bool(tr.success)
+        result.test_output = ((getattr(tr, "output", "") or getattr(tr, "error", "") or "")[:4000])
         if not tr.success:
             return self._done(result.fail("test", (tr.error or tr.output or "tests failed")[:500]), start)
 
@@ -179,7 +185,16 @@ class BuildLoop:
         return result
 
     async def emit_telemetry(self, result: BuildResult) -> None:
-        """Best-effort build-run telemetry → task_execution_log (#4257)."""
+        """Best-effort post-run reporting. Each step is isolated — telemetry must
+        NEVER break a build, and one reporter failing must not skip the others.
+
+        1. task_execution_log (#4257) via log_job.
+        2. qa_test_runs/qa_test_results (#4261) via report_build_result — for EVERY
+           outcome, so a red build is visible on the Test Bay / QA tabs too.
+        3. Loop-closer (#4262) via code_health_reverify — ONLY when a platform
+           Code-Health module is the target AND the change deployed (PR opened):
+           re-audit and confirm the finding actually landed (fixed / still_open).
+        """
         if not self.connector:
             return
         try:
@@ -194,7 +209,31 @@ class BuildLoop:
                 branch=result.branch,
             )
         except Exception:
-            pass  # telemetry must never break a build
+            pass
+        try:
+            await self.connector.report_build_result(
+                task=result.task,
+                branch=result.branch,
+                pr_url=result.pr_url,
+                pr_number=result.pr_number,
+                files_changed=result.files,
+                status=("completed" if result.success else "failed"),
+                duration_ms=result.duration_ms,
+                output=result.test_output,
+                tests=[{
+                    "name": self.test_command,
+                    "status": "pass" if result.tests_passed else "fail",
+                    "output": result.test_output,
+                    "duration_ms": result.duration_ms,
+                }],
+            )
+        except Exception:
+            pass
+        if result.success and result.module:
+            try:
+                result.reverify = await self.connector.code_health_reverify(result.module)
+            except Exception:
+                pass
 
 
 # ----------------------------------------------------------------------

@@ -243,6 +243,39 @@ class HubConnector:
             "source": "archie-code",
         })
 
+    async def report_build_result(self, task: str, branch: str | None = None,
+                                  pr_url: str | None = None, pr_number: int | None = None,
+                                  files_changed: list | None = None,
+                                  status: str = "completed", duration_ms: int = 0,
+                                  tests: list | None = None, output: str = "") -> dict:
+        """Report a build/test run to the hub → qa_test_runs/qa_test_results (#4261).
+
+        The engine built + tested in its OWN isolated /workspace; the hub only
+        RECORDS the result so engine-driven runs show on the Repair Bay Test Bay +
+        QA tabs. Same INTERNAL_API_KEY bearer as the other internal calls.
+        """
+        return await self.post("/api/internal/engine/build-result", data={
+            "task": task,
+            "branch": branch,
+            "pr_url": pr_url,
+            "pr_number": pr_number,
+            "files_changed": files_changed,
+            "status": status,
+            "duration_ms": duration_ms,
+            "output": output,
+            "tests": tests or [],
+        })
+
+    async def code_health_reverify(self, module: str | None = None) -> dict:
+        """Loop-closer (#4262): after a deploy, ask Code Health to re-audit and
+        confirm the finding actually landed ('fixed') or regressed ('still_open').
+        Returns {modules, fixed, still_open, details[]}. Same bearer auth.
+        """
+        return await self.post(
+            "/api/internal/code-health/reverify",
+            data={"module": module} if module else {},
+        )
+
     async def dhq_complete(self, prompt: str, system_prompt: str | None = None,
                            capability: str | None = None,
                            prefer_agent: str | None = None,
