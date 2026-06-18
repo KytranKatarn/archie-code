@@ -73,6 +73,46 @@ async def test_dhq_complete_posts_to_dhq_chat_and_returns_reply():
     assert out == '[{"path":"archie_engine/x.py"}]'
 
 
+async def test_dhq_complete_passes_capability_and_prefer_agent():
+    """The build loop's plan step targets a CODER (#4256), not the cockpit voice."""
+    c = _conn()
+    captured = {}
+
+    async def fake_post(path, data=None):
+        captured["path"] = path
+        captured["data"] = data
+        return {"success": True, "response": "[]"}
+
+    c.post = fake_post
+    out = await c.dhq_complete(
+        "plan this task",
+        capability="code",
+        prefer_agent="F.O.R.G.E.",
+        module_id="archie_code_engine",
+    )
+    assert captured["path"] == "/api/internal/dhq/chat"
+    assert captured["data"]["capability"] == "code"
+    assert captured["data"]["prefer_agent"] == "F.O.R.G.E."
+    assert captured["data"]["module_id"] == "archie_code_engine"
+    assert out == "[]"
+
+
+async def test_dhq_complete_omits_agent_override_by_default():
+    """No capability/prefer_agent → payload stays prompt-only (cockpit A.R.C.H.I.E. default)."""
+    c = _conn()
+    captured = {}
+
+    async def fake_post(path, data=None):
+        captured["data"] = data
+        return {"success": True, "response": "ok"}
+
+    c.post = fake_post
+    await c.dhq_complete("hi")
+    assert "capability" not in captured["data"]
+    assert "prefer_agent" not in captured["data"]
+    assert "module_id" not in captured["data"]
+
+
 async def test_dhq_complete_empty_when_no_response():
     c = _conn()
 

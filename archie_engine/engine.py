@@ -443,7 +443,14 @@ class Engine:
 
         async def _plan_dispatch(prompt: str) -> str:
             if self.hub_connector and self.hub_status.value == "connected":
-                return await self.hub_connector.dhq_complete(prompt)
+                # Route the plan to a CODER (F.O.R.G.E.), not the cockpit's
+                # A.R.C.H.I.E. conversation voice — strictly-local (#4256).
+                return await self.hub_connector.dhq_complete(
+                    prompt,
+                    capability="code",
+                    prefer_agent="F.O.R.G.E.",
+                    module_id="archie_code_engine",
+                )
             # hub offline → strictly-local fallback (engine's own Ollama)
             resp = await self.inference.chat(
                 messages=[{"role": "user", "content": prompt}],

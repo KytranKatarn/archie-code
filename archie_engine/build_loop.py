@@ -60,7 +60,7 @@ class BuildLoop:
                  max_files: int = DEFAULT_MAX_FILES,
                  test_command: str = DEFAULT_TEST_COMMAND,
                  test_timeout: int = DEFAULT_TEST_TIMEOUT,
-                 capability: str = "code_generation",
+                 capability: str = "code",  # informational; engine closure sets live dispatch capability
                  model: str = "archie:7b"):
         """
         tools       — a ToolRegistry exposing file_ops / git_ops / github_ops / shell_ops.
