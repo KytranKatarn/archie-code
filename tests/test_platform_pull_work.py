@@ -160,3 +160,57 @@ async def test_pull_and_build_skips_attempted_issue(tmp_path):
     assert len(stub.run_build_calls) == 1
     assert r.get("issue_id") == 3  # skipped attempted #2 (even though higher sev), rotated to #3
     assert tracker.should_skip(3, 3600)  # #3 now recorded (before the build)
+
+
+# ---- fetch window (#380): in-scope findings rank low in the queue, so the engine
+# must fetch a wide enough window or every cycle no-ops -------------------------------
+
+
+def test_autopull_fetch_limit_default():
+    from archie_engine.config import EngineConfig
+
+    assert EngineConfig().autopull_fetch_limit == 200  # wide enough to reach low-ranked in-scope
+
+
+class _LimitRecordingConn:
+    """Records the limit pull_and_build asks for, returns one in-scope issue."""
+
+    def __init__(self):
+        self.captured_limit = None
+
+    async def get_repair_issues(self, status="open", limit=100):
+        self.captured_limit = limit
+        return {"success": True, "issues": [
+            {"id": 9, "file_path": "platform_v2/tools/doc/routes.py", "message": "m", "severity": "low"},
+        ]}
+
+
+class _StubEngineCfgLimit:
+    def __init__(self, conn, fetch_limit=200):
+        self.hub_connector = conn
+
+        class _Cfg:
+            autopull_fetch_limit = fetch_limit
+            autopull_cooldown_sec = 21600
+
+        self.config = _Cfg()
+        self.run_build_calls = []
+
+    async def run_build(self, task, base="main", module=None, target="archie-code"):
+        self.run_build_calls.append({"module": module, "target": target})
+        return {"success": True, "stage": "done", "pr_url": "x", "branch": "engine/x"}
+
+
+async def test_pull_and_build_uses_config_fetch_limit_when_unspecified():
+    conn = _LimitRecordingConn()
+    stub = _StubEngineCfgLimit(conn, fetch_limit=175)
+    await Engine.pull_and_build(stub)  # no explicit limit
+    assert conn.captured_limit == 175  # resolved from config, not the old 50/100 default
+    assert len(stub.run_build_calls) == 1
+
+
+async def test_pull_and_build_explicit_limit_overrides_config():
+    conn = _LimitRecordingConn()
+    stub = _StubEngineCfgLimit(conn, fetch_limit=200)
+    await Engine.pull_and_build(stub, limit=33)
+    assert conn.captured_limit == 33  # explicit caller wins

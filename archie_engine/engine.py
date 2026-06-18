@@ -352,7 +352,7 @@ class Engine:
 
         if msg_type == "pull_repair_work":
             # #380 on-demand: pull one in-scope platform proposal + build a fix PR.
-            result = await self.pull_and_build(limit=int(msg.get("limit", 50)))
+            result = await self.pull_and_build(limit=int(msg.get("limit", self.config.autopull_fetch_limit)))
             return {"type": "pull_repair_result", **result}
 
         if msg_type == "state_sync":
@@ -530,7 +530,7 @@ class Engine:
             "target": target,
         }
 
-    async def pull_and_build(self, limit: int = 100) -> dict:
+    async def pull_and_build(self, limit: int | None = None) -> dict:
         """#380 pull-work: pull the highest-severity IN-SCOPE platform issue from the
         Repair Bay queue (#4259) and build a fix as a PR against archie-platform.
 
@@ -539,13 +539,19 @@ class Engine:
         file is under PLATFORM_SCOPE are buildable — core-platform findings are filtered
         out (the engine's safe surface = codex's Applications/Concepts modules). No
         in-scope item → clean no-op. The engine opens a PR and NEVER merges;
-        engine-authored PRs are also blocked from platform-side auto-merge. On-demand
-        (no autonomous scheduler — a separate, owner-gated opt-in).
+        engine-authored PRs are also blocked from platform-side auto-merge. Runs both
+        on-demand and via the autonomous scheduler (engine_autopull_cycle, every 6h,
+        owner-gated by work_control). When limit is None it defaults to
+        config.autopull_fetch_limit — the Repair Bay queue is top-heavy with
+        out-of-scope/core findings, so the window must be wide enough to reach the
+        in-scope ones or every cycle no-ops.
         """
         from archie_engine.scope_guard import is_in_scope, PLATFORM_SCOPE
 
         if not self.hub_connector:
             return {"success": False, "error": "no hub connector"}
+        if limit is None:
+            limit = getattr(getattr(self, "config", None), "autopull_fetch_limit", 200)
         resp = await self.hub_connector.get_repair_issues(status="open", limit=limit)
         if not isinstance(resp, dict) or "error" in resp:
             return {"success": False, "error": f"queue read failed: {resp}"}

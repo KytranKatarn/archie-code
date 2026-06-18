@@ -85,6 +85,13 @@ class EngineConfig:
     autopull_cooldown_sec: int = field(default_factory=lambda: int(os.environ.get(
         "ARCHIE_AUTOPULL_COOLDOWN_SEC", "21600"
     )))
+    # How many open issues to fetch per autopull cycle. The Repair Bay queue is
+    # dominated by out-of-scope / core-platform findings at the top, so in-scope
+    # (Applications/Concepts) findings can rank well down the list — the fetch window
+    # MUST be wide enough to reach them or every cycle no-ops. Tunable via env.
+    autopull_fetch_limit: int = field(default_factory=lambda: int(os.environ.get(
+        "ARCHIE_AUTOPULL_FETCH_LIMIT", "200"
+    )))
 
     # Inbound (hub dispatches work here)
     inbound_host: str = field(default_factory=lambda: os.environ.get(
