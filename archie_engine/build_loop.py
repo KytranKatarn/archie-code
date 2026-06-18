@@ -166,7 +166,12 @@ class BuildLoop:
     # ------------------------------------------------------------------
 
     async def _plan(self, task: str) -> tuple[list, str | None]:
-        prompt = _plan_prompt(task)
+        # Tell the planner the TARGET's allowed paths so it writes under the right
+        # prefix (archie-code -> archie_engine/...; platform -> platform_v2/tools/...).
+        from archie_engine.scope_guard import DEFAULT_ARCHIE_CODE_SCOPE
+
+        allowed = (self.scope_config or DEFAULT_ARCHIE_CODE_SCOPE).get("allowed_paths", [])
+        prompt = _plan_prompt(task, allowed)
         try:
             raw = await self.dispatch_fn(prompt)
         except Exception as exc:  # dispatch failure is a graceful plan failure
@@ -263,13 +268,17 @@ def _pr_body(task: str, files: list) -> str:
     )
 
 
-def _plan_prompt(task: str) -> str:
+def _plan_prompt(task: str, allowed_paths=None) -> str:
+    paths = ", ".join(allowed_paths or ["archie_engine/", "tests/", "docs/"])
     return (
         "You are the A.R.C.H.I.E. build engine. Produce ONLY the file changes needed for the task.\n"
         "Return a STRICT JSON array of file operations and NOTHING else. Each item is one of:\n"
         '  {"path": "<repo-relative path>", "action": "write", "content": "<full new file contents>"}\n'
         '  {"path": "<repo-relative path>", "action": "edit", "old_string": "<exact text>", "new_string": "<replacement>"}\n'
-        "Only touch files under archie_engine/, tests/, or docs/. Never secrets/infra/CI.\n\n"
+        f"Only touch files under: {paths}. Never secrets/infra/CI.\n"
+        "Paths are REPO-RELATIVE and MUST begin with one of those exact prefixes (do not add any other "
+        "prefix). For an 'edit', old_string MUST be text that ALREADY EXISTS verbatim in the file; if you "
+        "are not certain it exists, use 'write' with the full new contents instead.\n\n"
         f"TASK: {task}\n\nJSON:"
     )
 
