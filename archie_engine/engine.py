@@ -463,6 +463,13 @@ class Engine:
         from archie_engine.build_loop import BuildLoop
         from archie_engine.scope_guard import PLATFORM_SCOPE
 
+        # Validate the target up front — an unknown value must NOT silently fall
+        # through to building archie-code (would mis-route a platform task).
+        if target not in ("archie-code", "archie-platform"):
+            return {"success": False, "error": f"unknown build target {target!r}",
+                    "stage": "init", "branch": "", "files": [], "pr_url": None,
+                    "pr_number": None, "duration_ms": 0, "target": target}
+
         async def _plan_dispatch(prompt: str) -> str:
             if self.hub_connector and self.hub_status.value == "connected":
                 # Route the plan to a CODER (F.O.R.G.E.), not the cockpit's

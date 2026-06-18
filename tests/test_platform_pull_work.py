@@ -104,3 +104,10 @@ async def test_pull_and_build_picks_highest_priority_in_scope():
     assert call["target"] == "archie-platform"
     assert call["module"] == "doc"  # highest-priority IN-SCOPE wins (7 > 3)
     assert r.get("proposal_id") == 3
+
+
+async def test_run_build_rejects_unknown_target():
+    # validation runs before any self access → a bare object() is a fine stub
+    r = await Engine.run_build(object(), "do something", target="bogus")
+    assert r["success"] is False
+    assert "unknown build target" in r["error"]
