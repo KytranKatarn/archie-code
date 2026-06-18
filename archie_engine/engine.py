@@ -483,6 +483,10 @@ class Engine:
                     capability="code",
                     prefer_agent="F.O.R.G.E.",
                     module_id="archie_code_engine",
+                    # Pin the PLAN to a coding model (#380 Phase 3) — the dispatcher
+                    # honors model_override on hub Ollama (which has it). Far better
+                    # file-op plans than the general default (eval: ~60-75% vs ~25%).
+                    model=self.config.build_plan_model or None,
                 )
             # hub offline → strictly-local fallback (engine's own Ollama). Constrain to
             # the op-array SCHEMA so the list always parses (#380 Phase 2 — bare "json"
@@ -490,7 +494,7 @@ class Engine:
             # pass-through is a follow-up (DHQ-side).
             resp = await self.inference.chat(
                 messages=[{"role": "user", "content": prompt}],
-                model=self.config.default_model,
+                model=self.config.build_plan_model or self.config.default_model,
                 format=OPS_SCHEMA,
             )
             msg = resp.get("message", {}) if isinstance(resp, dict) else {}
