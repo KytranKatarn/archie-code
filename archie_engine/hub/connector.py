@@ -298,7 +298,8 @@ class HubConnector:
     async def dhq_complete(self, prompt: str, system_prompt: str | None = None,
                            capability: str | None = None,
                            prefer_agent: str | None = None,
-                           module_id: str | None = None) -> str:
+                           module_id: str | None = None,
+                           model: str | None = None) -> str:
         """Synchronous, strictly-local DHQ completion — for the build loop's plan
         step (#4256). POSTs to /api/internal/dhq/chat, which routes through the
         dispatcher (welfare + cost + cold-load queue, local_only) and returns the
@@ -317,6 +318,8 @@ class HubConnector:
             payload["prefer_agent"] = prefer_agent
         if module_id is not None:
             payload["module_id"] = module_id
+        if model is not None:
+            payload["model"] = model  # → hub passes as model_override (pins the plan model)
         resp = await self.post("/api/internal/dhq/chat", data=payload,
                                timeout=_DHQ_COMPLETE_TIMEOUT)
         if isinstance(resp, dict):

@@ -77,6 +77,13 @@ class EngineConfig:
     build_plan_file_budget: int = field(default_factory=lambda: int(os.environ.get(
         "ARCHIE_BUILD_PLAN_FILE_BUDGET", "16000"
     )))
+    # Model for the PLAN (coordinate) step. The eval (#380 Phase 2) showed a coding
+    # model writes far better file-op plans than the general default once it can see the
+    # file: qwen2.5-coder:7b ~60-75% plan-ok vs qwen2.5:7b ~25%. Sent as model_override
+    # so the dispatcher pins it on hub Ollama (which has it) under F.O.R.G.E.'s accounting.
+    build_plan_model: str = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_BUILD_PLAN_MODEL", "qwen2.5-coder:7b"
+    ))
 
     # Platform-target build (#380 engine→platform expansion). The engine clones
     # archie-platform into a SECOND workspace and builds fixes for the platform's
