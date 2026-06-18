@@ -16,7 +16,7 @@ async def test_log_job_posts_to_engine_telemetry_endpoint():
     c = _conn()
     calls = []
 
-    async def fake_post(path, data=None):
+    async def fake_post(path, data=None, timeout=None):
         calls.append((path, data))
         return {"ok": True, "id": 7}
 
@@ -45,7 +45,7 @@ async def test_log_job_backward_compatible_with_original_4_args():
     c = _conn()
     captured = {}
 
-    async def fake_post(path, data=None):
+    async def fake_post(path, data=None, timeout=None):
         captured["path"] = path
         captured["data"] = data
         return {"ok": True}
@@ -61,7 +61,7 @@ async def test_dhq_complete_posts_to_dhq_chat_and_returns_reply():
     c = _conn()
     captured = {}
 
-    async def fake_post(path, data=None):
+    async def fake_post(path, data=None, timeout=None):
         captured["path"] = path
         captured["data"] = data
         return {"success": True, "response": '[{"path":"archie_engine/x.py"}]'}
@@ -78,9 +78,10 @@ async def test_dhq_complete_passes_capability_and_prefer_agent():
     c = _conn()
     captured = {}
 
-    async def fake_post(path, data=None):
+    async def fake_post(path, data=None, timeout=None):
         captured["path"] = path
         captured["data"] = data
+        captured["timeout"] = timeout
         return {"success": True, "response": "[]"}
 
     c.post = fake_post
@@ -94,6 +95,8 @@ async def test_dhq_complete_passes_capability_and_prefer_agent():
     assert captured["data"]["capability"] == "code"
     assert captured["data"]["prefer_agent"] == "F.O.R.G.E."
     assert captured["data"]["module_id"] == "archie_code_engine"
+    # plan step must outlast F.O.R.G.E. inference — NOT the 10s control-plane default (#4256)
+    assert captured["timeout"] is not None and captured["timeout"] > 10
     assert out == "[]"
 
 
@@ -102,7 +105,7 @@ async def test_dhq_complete_omits_agent_override_by_default():
     c = _conn()
     captured = {}
 
-    async def fake_post(path, data=None):
+    async def fake_post(path, data=None, timeout=None):
         captured["data"] = data
         return {"success": True, "response": "ok"}
 
@@ -116,7 +119,7 @@ async def test_dhq_complete_omits_agent_override_by_default():
 async def test_dhq_complete_empty_when_no_response():
     c = _conn()
 
-    async def fake_post(path, data=None):
+    async def fake_post(path, data=None, timeout=None):
         return {"success": False}
 
     c.post = fake_post

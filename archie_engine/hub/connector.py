@@ -1,8 +1,17 @@
 """Hub connector — REST API client for ARCHIE platform."""
 
 import logging
+import os
+
 import aiohttp
 from archie_engine.hub.auth import HubAuth
+
+# The plan-step DHQ completion is a full LLM call (coder agent) and routinely
+# takes 5-30s+ — far longer than the connector's fast control-plane default
+# (config.hub_timeout, ~10s). Give it its own generous timeout so the build
+# loop's plan step does not time out on F.O.R.G.E. inference (override via
+# ARCHIE_DHQ_TIMEOUT). #4256.
+_DHQ_COMPLETE_TIMEOUT = int(os.environ.get("ARCHIE_DHQ_TIMEOUT", "300"))
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +38,16 @@ class HubConnector:
             logger.warning("Hub GET %s failed: %s", path, e)
             return {"error": str(e), "status": 0}
 
-    async def post(self, path: str, data: dict | None = None) -> dict:
-        """HTTP POST with auth headers. Returns parsed JSON or error dict."""
+    async def post(self, path: str, data: dict | None = None,
+                   timeout: int | None = None) -> dict:
+        """HTTP POST with auth headers. Returns parsed JSON or error dict.
+
+        timeout overrides the connector default for this one call (used by
+        dhq_complete, whose LLM completion outlasts the fast control-plane default).
+        """
         url = f"{self.hub_url}{path}"
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout or self.timeout) as session:
                 async with session.post(url, headers=self.auth.get_headers(), json=data) as resp:
                     result = await resp.json()
                     if resp.status >= 400:
@@ -236,7 +250,8 @@ class HubConnector:
             payload["prefer_agent"] = prefer_agent
         if module_id is not None:
             payload["module_id"] = module_id
-        resp = await self.post("/api/internal/dhq/chat", data=payload)
+        resp = await self.post("/api/internal/dhq/chat", data=payload,
+                               timeout=_DHQ_COMPLETE_TIMEOUT)
         if isinstance(resp, dict):
             return resp.get("response", "") or ""
         return ""
