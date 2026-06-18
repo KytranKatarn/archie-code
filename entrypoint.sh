@@ -50,6 +50,34 @@ else
   git -C "$WS" reset --hard origin/main || true
 fi
 
+# --- (optional) second workspace: a live archie-platform checkout for the engine->
+# platform pull-work loop (#380). BEST-EFFORT: a clone failure must NEVER block the
+# engine — the archie-code build path + control plane keep working, and pull_and_build
+# just errors/no-ops if the platform checkout is missing. Same credential helper (the
+# token is read from $ARCHIE_GITHUB_TOKEN at fetch time; archie-platform is private).
+PLATFORM_WS="${ARCHIE_PLATFORM_WORKSPACE:-/workspace-platform}"
+PLATFORM_REPO_URL="${ARCHIE_PLATFORM_REPO_URL:-https://github.com/KytranKatarn/archie-platform.git}"
+if [ "${ARCHIE_ENGINE_PLATFORM_TARGET:-1}" != "0" ] && mkdir -p "$PLATFORM_WS" 2>/dev/null; then
+  git config --global --add safe.directory "$PLATFORM_WS"
+  if [ ! -d "$PLATFORM_WS/.git" ]; then
+    echo "[entrypoint] cloning archie-platform -> $PLATFORM_WS"
+    ptmp="$(mktemp -d)"
+    if git clone --depth 50 "$PLATFORM_REPO_URL" "$ptmp/repo"; then
+      cp -a "$ptmp/repo/." "$PLATFORM_WS/" && echo "[entrypoint] platform clone OK"
+    else
+      echo "[entrypoint] WARN: platform clone failed — pull-work disabled this run" >&2
+    fi
+    rm -rf "$ptmp"
+  else
+    echo "[entrypoint] refreshing $PLATFORM_WS -> origin/main"
+    git -C "$PLATFORM_WS" fetch origin main || true
+    git -C "$PLATFORM_WS" checkout main 2>/dev/null || true
+    git -C "$PLATFORM_WS" reset --hard origin/main || true
+  fi
+else
+  echo "[entrypoint] platform workspace skipped (no writable mount or disabled)"
+fi
+
 cd "$WS" || { echo "[entrypoint] FATAL: cannot cd to $WS" >&2; exit 1; }
 echo "[entrypoint] workspace ready @ $(git rev-parse --short HEAD 2>/dev/null || echo none) — launching: $*"
 

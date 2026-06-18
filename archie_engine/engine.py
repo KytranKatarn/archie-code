@@ -235,14 +235,25 @@ class Engine:
         except Exception as e:
             return {"output": f"Tool handler error: {e}"}
 
-    def _build_tool_registry(self) -> ToolRegistry:
+    def _build_tool_registry(self, workspace: Path | None = None,
+                             scope_config: dict | None = None,
+                             repo: str | None = None) -> ToolRegistry:
+        """Build a tool registry bound to a target workspace + scope + repo.
+
+        Defaults (no args) reproduce the archie-code path exactly: cwd workspace,
+        DEFAULT_ARCHIE_CODE_SCOPE (scope_config=None), and the default github_ops repo.
+        For the platform target (#380), pass workspace=/workspace-platform,
+        scope_config=PLATFORM_SCOPE, repo='KytranKatarn/archie-platform'.
+        """
         registry = ToolRegistry()
-        workspace = Path.cwd()
+        workspace = workspace or Path.cwd()
         registry.register(FileOpsTool(workspace=workspace))
-        registry.register(GitOpsTool(workspace=workspace))
+        # scope_config gates git add (deny-by-default); None → archie-code scope.
+        registry.register(GitOpsTool(workspace=workspace, scope_config=scope_config))
         # Open PRs for F.O.R.G.E. review — branch+PR-only, never merges (#4255).
+        # repo=None → default archie-code; platform builds pass the archie-platform repo.
         # Token from ARCHIE_GITHUB_TOKEN/GITHUB_TOKEN; empty → writes fail closed.
-        registry.register(GitHubOpsTool())
+        registry.register(GitHubOpsTool(repo=repo))
         registry.register(ShellOpsTool(workspace=workspace, config=self.config))
         # QA ops — triggers P.R.O.B.E. test suites on the A.R.C.H.I.E. platform
         # over HTTP. Credentials come from ARCHIE_API_PASSWORD /
@@ -334,6 +345,11 @@ class Engine:
 
         if msg_type == "delegate":
             return await self._handle_delegation(msg)
+
+        if msg_type == "pull_repair_work":
+            # #380 on-demand: pull one in-scope platform proposal + build a fix PR.
+            result = await self.pull_and_build(limit=int(msg.get("limit", 50)))
+            return {"type": "pull_repair_result", **result}
 
         if msg_type == "state_sync":
             return self._handle_incoming_sync(msg)
@@ -431,15 +447,21 @@ class Engine:
             logger.error("Inbound job failed: %s", e)
             return {"success": False, "error": str(e)}
 
-    async def run_build(self, task: str, base: str = "main") -> dict:
+    async def run_build(self, task: str, base: str = "main", module: str | None = None,
+                         target: str = "archie-code") -> dict:
         """Run one autonomous coordinate→build→test→deploy cycle (#4256).
 
-        The plan (coordinate) step routes through DHQ (strictly local) when the
-        hub is connected, else falls back to the engine's local inference. Build
-        applies are scope-guarded; the loop opens a PR for F.O.R.G.E. and NEVER
-        merges.
+        target='archie-code' (default) builds the engine's OWN repo in /workspace
+        (DEFAULT_ARCHIE_CODE_SCOPE). target='archie-platform' (#380) builds platform
+        Applications/Concepts fixes in the platform workspace (PLATFORM_SCOPE) and
+        opens a PR against archie-platform. The plan (coordinate) step routes to a
+        CODER (F.O.R.G.E.) via DHQ when the hub is connected, else the engine's local
+        inference. Build applies are scope-guarded; the loop opens a PR for F.O.R.G.E.
+        and NEVER merges. Engine-authored PRs are additionally gated from auto-merge
+        platform-side (branch "engine/" → human merge only).
         """
         from archie_engine.build_loop import BuildLoop
+        from archie_engine.scope_guard import PLATFORM_SCOPE
 
         async def _plan_dispatch(prompt: str) -> str:
             if self.hub_connector and self.hub_status.value == "connected":
@@ -459,16 +481,31 @@ class Engine:
             msg = resp.get("message", {}) if isinstance(resp, dict) else {}
             return msg.get("content", "") if isinstance(msg, dict) else ""
 
+        # Per-target wiring. Defaults reproduce the archie-code path exactly.
+        if target == "archie-platform":
+            tools = self._build_tool_registry(
+                workspace=Path(self.config.platform_workspace),
+                scope_config=PLATFORM_SCOPE,
+                repo=self.config.platform_repo,
+            )
+            scope_config = PLATFORM_SCOPE
+            test_command = self.config.platform_test_command
+        else:
+            tools = self.tools
+            scope_config = None  # → DEFAULT_ARCHIE_CODE_SCOPE
+            test_command = self.config.build_test_command
+
         loop = BuildLoop(
-            tools=self.tools,
+            tools=tools,
             dispatch_fn=_plan_dispatch,
             connector=self.hub_connector,
+            scope_config=scope_config,
             model=self.config.default_model,
             max_files=self.config.build_max_files,
-            test_command=self.config.build_test_command,
+            test_command=test_command,
             test_timeout=self.config.build_test_timeout,
         )
-        result = await loop.run(task, base=base)
+        result = await loop.run(task, base=base, module=module)
         await loop.emit_telemetry(result)
         return {
             "success": result.success,
@@ -479,7 +516,51 @@ class Engine:
             "pr_url": result.pr_url,
             "pr_number": result.pr_number,
             "duration_ms": result.duration_ms,
+            "target": target,
         }
+
+    async def pull_and_build(self, limit: int = 50) -> dict:
+        """#380 pull-work: pull the highest-priority IN-SCOPE platform proposal from
+        the Repair Bay queue (#4259) and build a fix as a PR against archie-platform.
+
+        Only proposals whose target file is under PLATFORM_SCOPE are buildable — core
+        platform issues are filtered out (the engine's safe surface = codex's
+        Applications/Concepts modules). No in-scope item → clean no-op. The engine
+        opens a PR and NEVER merges; engine-authored PRs are also blocked from
+        platform-side auto-merge. On-demand (no autonomous scheduler — that's a
+        separate, owner-gated opt-in).
+        """
+        from archie_engine.scope_guard import is_in_scope, PLATFORM_SCOPE
+
+        if not self.hub_connector:
+            return {"success": False, "error": "no hub connector"}
+        resp = await self.hub_connector.get_repair_proposals(status="proposed")
+        if not isinstance(resp, dict) or "error" in resp:
+            return {"success": False, "error": f"queue read failed: {resp}"}
+        proposals = resp.get("proposals", []) or []
+
+        in_scope = [p for p in proposals if _proposal_path(p) and is_in_scope(_proposal_path(p), PLATFORM_SCOPE)]
+        if not in_scope:
+            logger.info(
+                "[pull_and_build] no in-scope platform proposals (%d in queue) — no-op",
+                len(proposals),
+            )
+            return {"success": True, "skipped": True, "reason": "no in-scope proposal",
+                    "queue_size": len(proposals)}
+
+        in_scope.sort(key=lambda p: -(p.get("priority") or 0))
+        picked = in_scope[0]
+        fp = _proposal_path(picked)
+        module = _module_from_path(fp)
+        task = _format_proposal_task(picked, fp)
+        logger.info(
+            "[pull_and_build] building proposal #%s (%s, module=%s) → archie-platform",
+            picked.get("id"), fp, module,
+        )
+        result = await self.run_build(task, target="archie-platform", module=module)
+        result["proposal_id"] = picked.get("id")
+        result["file_path"] = fp
+        return result
 
     async def _process_chat_message(self, msg: dict) -> dict:
         content = msg.get("content", "")
@@ -614,3 +695,41 @@ class Engine:
             "type": "sync_ack",
             "conflicts": conflicts,
         }
+
+
+# ----------------------------------------------------------------------
+# Pull-work helpers (#380) — pure, module-level so they're trivially testable
+# ----------------------------------------------------------------------
+
+def _proposal_path(proposal: dict) -> str:
+    """Best-effort target file path for a Repair Bay proposal (column or metadata)."""
+    if not isinstance(proposal, dict):
+        return ""
+    fp = proposal.get("file_path")
+    if not fp:
+        md = proposal.get("metadata")
+        if isinstance(md, dict):
+            fp = md.get("file_path")
+    return fp or ""
+
+
+def _module_from_path(path: str) -> str | None:
+    """platform_v2/tools/<module>/... -> '<module>' (drives the loop-closer reverify)."""
+    parts = (path or "").split("/")
+    if len(parts) >= 3 and parts[0] == "platform_v2" and parts[1] == "tools":
+        return parts[2]
+    return None
+
+
+def _format_proposal_task(proposal: dict, file_path: str) -> str:
+    """Turn a Repair Bay proposal into a build task for the engine's plan step."""
+    title = proposal.get("title") or "Fix Repair Bay finding"
+    desc = (proposal.get("description") or "").strip()
+    out = (
+        "Fix this Repair Bay finding in the A.R.C.H.I.E. platform. Make the MINIMAL, "
+        "correct change and only edit files in this module.\n\n"
+        f"File: {file_path}\nFinding: {title}\n"
+    )
+    if desc:
+        out += f"\nDetails:\n{desc}\n"
+    return out

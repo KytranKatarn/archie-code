@@ -50,6 +50,53 @@ DEFAULT_ARCHIE_CODE_SCOPE: dict = {
 }
 
 
+# Deny-by-default scope for the archie-PLATFORM repo (project #380 — engine→platform
+# expansion). Mirrors the PROVEN codex allowlist (config/agents/codex.yaml): only the
+# low-data Applications/Concepts modules + their shared-tree UI + tests.
+# media_studio/game_studio/media_hub are deliberately EXCLUDED — they hold real prod
+# data and need DB isolation first (same call codex made). The blocked globs add the
+# platform never-touch surface (secrets/infra/CI + the agent/dispatch core) on top.
+PLATFORM_SCOPE: dict = {
+    "allowed_paths": [
+        "platform_v2/tools/fitness/",
+        "platform_v2/tools/family_tree/",
+        "platform_v2/tools/therapy/",
+        "platform_v2/tools/faith/",
+        "platform_v2/tools/brainstorm/",
+        "platform_v2/tools/doc/",
+        "platform_v2/templates/tools/fitness.html",
+        "platform_v2/templates/tools/therapy.html",
+        "platform_v2/templates/tools/faith.html",
+        "platform_v2/templates/tools/brainstorm.html",
+        "platform_v2/templates/tools/doc.html",
+        "platform_v2/static/js/fitness-chat.js",
+        "platform_v2/static/js/therapy-chat.js",
+        "platform_v2/static/js/faith-chat.js",
+        "platform_v2/static/js/family-tree-chat.js",
+        "platform_v2/static/js/doc-chat.js",
+        "platform_v2/static/css/fitness.css",
+        "platform_v2/static/css/therapy.css",
+        "platform_v2/tests/",
+    ],
+    "blocked_globs": [
+        "*.env",
+        ".env*",
+        "*.key",
+        "*.pem",
+        "*.pfx",
+        "secrets/*",
+        "docker-compose*",
+        "Dockerfile*",
+        "scripts/dr/*",
+        ".git/*",
+        ".github/*",
+        # never let autonomous platform edits touch the agent/dispatch core
+        "*agent_service.py",
+        "*department_dispatcher.py",
+    ],
+}
+
+
 def _normalize(path: str) -> Optional[str]:
     """Return a safe repo-relative normalized path, or None if unsafe.
 
