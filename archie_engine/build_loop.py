@@ -34,6 +34,25 @@ from archie_engine.scope_guard import is_in_scope
 DEFAULT_MAX_FILES = 25
 DEFAULT_TEST_COMMAND = "python -m pytest -q"
 DEFAULT_TEST_TIMEOUT = 600
+DEFAULT_PLAN_FILE_BUDGET = 16000  # max chars of target-file content injected into the plan prompt
+
+# Ollama structured-output schema for the plan: constrains the model to emit a top-level
+# ARRAY of op objects so the op-list always parses (#380 Phase 2 — bare format="json"
+# forced object-shaped JSON that the array parser rejected; a schema fixed parse 0%→100%).
+OPS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "action": {"type": "string", "enum": ["write", "edit"]},
+            "content": {"type": "string"},
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string"},
+        },
+        "required": ["path", "action"],
+    },
+}
 
 
 @dataclass
@@ -66,7 +85,8 @@ class BuildLoop:
                  test_timeout: int = DEFAULT_TEST_TIMEOUT,
                  capability: str = "code",  # informational; engine closure sets live dispatch capability
                  model: str = "archie:7b",
-                 plan_max_retries: int = 2):
+                 plan_max_retries: int = 2,
+                 plan_file_budget: int = DEFAULT_PLAN_FILE_BUDGET):
         """
         tools       — a ToolRegistry exposing file_ops / git_ops / github_ops / shell_ops.
         dispatch_fn — async callable(prompt:str) -> str: the coordinate step. In the
@@ -84,13 +104,14 @@ class BuildLoop:
         self.capability = capability
         self.model = model
         self.plan_max_retries = plan_max_retries
+        self.plan_file_budget = plan_file_budget
 
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
     async def run(self, task: str, base: str = "main", branch: str | None = None,
-                  module: str | None = None) -> BuildResult:
+                  module: str | None = None, target_file: str | None = None) -> BuildResult:
         start = time.monotonic()
         branch = branch or _branch_name(task)
         result = BuildResult(task=task, branch=branch)
@@ -108,7 +129,7 @@ class BuildLoop:
         # op-list and re-prompt the model with the exact error on a parse OR validation
         # failure (model-independent reliability; #380 Phase 1). Nothing is written until
         # every op is in-scope and every edit's old_string is confirmed present.
-        ops, plan_err = await self._plan_with_retries(task)
+        ops, plan_err = await self._plan_with_retries(task, target_file=target_file)
         if plan_err:
             return self._done(result.fail("plan", plan_err), start)
 
@@ -167,13 +188,14 @@ class BuildLoop:
     # Coordinate (LLM plan) — injected dispatch, robust parse
     # ------------------------------------------------------------------
 
-    async def _plan(self, task: str, feedback: str | None = None) -> tuple[list, str | None]:
+    async def _plan(self, task: str, feedback: str | None = None,
+                    file_content: str | None = None, file_path: str | None = None) -> tuple[list, str | None]:
         # Tell the planner the TARGET's allowed paths so it writes under the right
         # prefix (archie-code -> archie_engine/...; platform -> platform_v2/tools/...).
         from archie_engine.scope_guard import DEFAULT_ARCHIE_CODE_SCOPE
 
         allowed = (self.scope_config or DEFAULT_ARCHIE_CODE_SCOPE).get("allowed_paths", [])
-        prompt = _plan_prompt(task, allowed)
+        prompt = _plan_prompt(task, allowed, file_path=file_path, file_content=file_content)
         if feedback:
             # Re-prompt with the exact reason the last attempt was rejected (#380 Phase 1).
             prompt = (f"{prompt}\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED:\n{feedback}\n"
@@ -187,17 +209,26 @@ class BuildLoop:
             return [], "could not parse a JSON op list from the plan"
         return ops, None
 
-    async def _plan_with_retries(self, task: str) -> tuple[list, str | None]:
+    async def _plan_with_retries(self, task: str, target_file: str | None = None) -> tuple[list, str | None]:
         """Plan → DRY-RUN validate the whole op-list before any file is touched. On a
         parse failure or a validation failure, re-prompt the model with the exact error
         (up to plan_max_retries). Corrects the two dominant small-model failure modes —
         unparseable JSON and a hallucinated edit old_string — WITHOUT changing the model
-        (#380 Phase 1). A dispatch (infra) failure and the file-cap are not retried."""
+        (#380 Phase 1). A dispatch (infra) failure and the file-cap are not retried.
+
+        #380 Phase 2b: inject the TARGET FILE's CURRENT content into the plan prompt
+        (resolved from target_file, else parsed from the task's 'File: <path>') so the
+        model copies the exact old_string instead of guessing it — the dominant cause of
+        the 'old_string not found' failure. Read ONCE, reused across retries."""
+        file_path = target_file or _target_file_from_task(task)
+        file_content = None
+        if file_path and is_in_scope(file_path, self.scope_config):
+            file_content = await self._read_target(file_path, task)
         feedback = None
         last_err = "no plan produced"
         attempts = 1 + max(0, self.plan_max_retries)
         for _attempt in range(attempts):
-            ops, perr = await self._plan(task, feedback)
+            ops, perr = await self._plan(task, feedback, file_content, file_path)
             if perr:
                 if perr.startswith("dispatch failed"):
                     return [], perr  # infra failure — retrying the same call won't help
@@ -249,6 +280,23 @@ class BuildLoop:
             else:
                 errors.append(f"op {idx} ({path}): unknown action {action!r}")
         return errors
+
+    async def _read_target(self, path: str, task: str) -> str | None:
+        """Read the target file RAW for prompt injection. Full content if within budget;
+        otherwise a window around the flagged 'line N' (so the edit region is present),
+        falling back to a head slice. Returns None if the file can't be read."""
+        rd = await self.tools.execute("file_ops", operation="read", path=path, numbered=False)
+        if not rd.success:
+            return None
+        content = getattr(rd, "output", "") or ""
+        if len(content) <= self.plan_file_budget:
+            return content
+        line = _extract_line(task)
+        lines = content.splitlines()
+        if line and 1 <= line <= len(lines):
+            lo, hi = max(0, line - 80), min(len(lines), line + 80)
+            return "\n".join(lines[lo:hi]) + f"\n... (showing lines {lo + 1}-{hi} of {len(lines)})"
+        return content[: self.plan_file_budget] + "\n... (truncated)"
 
     # ------------------------------------------------------------------
     # Telemetry + finalisation
@@ -339,8 +387,18 @@ def _pr_body(task: str, files: list) -> str:
     )
 
 
-def _plan_prompt(task: str, allowed_paths=None) -> str:
+def _plan_prompt(task: str, allowed_paths=None, file_path=None, file_content=None) -> str:
     paths = ", ".join(allowed_paths or ["archie_engine/", "tests/", "docs/"])
+    file_block = ""
+    if file_path and file_content is not None:
+        # #380 Phase 2b: show the model the file it must edit so its old_string is the
+        # ACTUAL text, not a guess (the dominant 'old_string not found' cause).
+        file_block = (
+            f"\nThe file to change is `{file_path}`. Its CURRENT contents are between the markers "
+            "below — for an 'edit', old_string MUST be copied EXACTLY (verbatim, including whitespace) "
+            "from these contents; do NOT invent or paraphrase it.\n"
+            f"<<<FILE {file_path}>>>\n{file_content}\n<<<END FILE>>>\n"
+        )
     return (
         "You are the A.R.C.H.I.E. build engine. Produce ONLY the file changes needed for the task.\n"
         "Return a STRICT JSON array of file operations and NOTHING else. Each item is one of:\n"
@@ -349,9 +407,23 @@ def _plan_prompt(task: str, allowed_paths=None) -> str:
         f"Only touch files under: {paths}. Never secrets/infra/CI.\n"
         "Paths are REPO-RELATIVE and MUST begin with one of those exact prefixes (do not add any other "
         "prefix). For an 'edit', old_string MUST be text that ALREADY EXISTS verbatim in the file; if you "
-        "are not certain it exists, use 'write' with the full new contents instead.\n\n"
-        f"TASK: {task}\n\nJSON:"
+        "are not certain it exists, use 'write' with the full new contents instead.\n"
+        f"{file_block}"
+        f"\nTASK: {task}\n\nJSON:"
     )
+
+
+def _extract_line(task: str):
+    """Parse a 'line N' hint out of the task text, if present (for windowing big files)."""
+    m = re.search(r"line\s+(\d+)", task or "")
+    return int(m.group(1)) if m else None
+
+
+def _target_file_from_task(task: str):
+    """Parse the 'File: <path>' the task references, so the planner can be shown that
+    file's content without the caller threading it explicitly."""
+    m = re.search(r"File:\s*([^\s()]+)", task or "")
+    return m.group(1) if m else None
 
 
 def _parse_ops(text: str):

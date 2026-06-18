@@ -71,6 +71,12 @@ class EngineConfig:
     build_plan_max_retries: int = field(default_factory=lambda: int(os.environ.get(
         "ARCHIE_BUILD_PLAN_MAX_RETRIES", "2"
     )))
+    # Max chars of the target file's current content injected into the plan prompt so the
+    # model copies the exact edit old_string instead of guessing (#380 Phase 2b). Files
+    # over budget are windowed around the flagged line.
+    build_plan_file_budget: int = field(default_factory=lambda: int(os.environ.get(
+        "ARCHIE_BUILD_PLAN_FILE_BUDGET", "16000"
+    )))
 
     # Platform-target build (#380 engine→platform expansion). The engine clones
     # archie-platform into a SECOND workspace and builds fixes for the platform's
