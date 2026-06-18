@@ -71,8 +71,10 @@ async def test_never_merges():
 async def test_out_of_scope_path_rejected_before_any_write():
     tools = FakeTools()
     bad = '[{"path": ".env", "action": "write", "content": "SECRET=1"}]'
-    r = await BuildLoop(tools=tools, dispatch_fn=_dispatch(bad)).run("write env")
-    assert not r.success and r.stage == "apply"
+    # #380 Phase 1: dry-run validation now rejects this at the PLAN stage, before any
+    # write — strictly safer than the old apply-time guard. (max_retries=0 = one pass.)
+    r = await BuildLoop(tools=tools, dispatch_fn=_dispatch(bad), plan_max_retries=0).run("write env")
+    assert not r.success and r.stage == "plan"
     s = tools.seq()
     assert ("file_ops", "write") not in s
     assert ("git_ops", "push") not in s and ("github_ops", "pr_create") not in s
@@ -81,8 +83,9 @@ async def test_out_of_scope_path_rejected_before_any_write():
 async def test_unknown_action_rejected():
     tools = FakeTools()
     bad = '[{"path": "archie_engine/x.py", "action": "delete"}]'
-    r = await BuildLoop(tools=tools, dispatch_fn=_dispatch(bad)).run("del")
-    assert not r.success and r.stage == "apply"
+    # Unknown action is now caught by plan validation (pre-apply).
+    r = await BuildLoop(tools=tools, dispatch_fn=_dispatch(bad), plan_max_retries=0).run("del")
+    assert not r.success and r.stage == "plan"
 
 
 # --- file cap -----------------------------------------------------------
@@ -186,3 +189,85 @@ def test_branch_name_slugifies():
     # slugified prefix, not an exact match.
     assert _branch_name("Add Feature X!").startswith("engine/add-feature-x-")
     assert _branch_name("").startswith("engine/task-")
+
+
+# --- #380 Phase 1: dry-run validation + retry-with-feedback ----------------
+
+def _dispatch_seq(*responses):
+    """Async dispatch returning each response in order (last repeats); records prompts."""
+    state = {"i": 0, "prompts": []}
+
+    async def _d(prompt):
+        state["prompts"].append(prompt)
+        r = responses[min(state["i"], len(responses) - 1)] if responses else ""
+        state["i"] += 1
+        return r
+
+    _d.state = state
+    return _d
+
+
+EDIT_OK = '[{"path": "archie_engine/x.py", "action": "edit", "old_string": "TARGET", "new_string": "NEW"}]'
+
+
+async def test_validate_ops_flags_missing_old_string():
+    tools = FakeTools()
+    tools.set("file_ops", "read", ToolResult(success=True, output="totally different content"))
+    loop = BuildLoop(tools=tools, dispatch_fn=_dispatch(EDIT_OK))
+    errs = await loop._validate_ops([
+        {"path": "archie_engine/x.py", "action": "edit", "old_string": "TARGET", "new_string": "NEW"}
+    ])
+    assert errs and "old_string not found" in errs[0]
+
+
+async def test_validate_ops_passes_present_old_string_and_write():
+    tools = FakeTools()
+    tools.set("file_ops", "read", ToolResult(success=True, output="has TARGET inside"))
+    loop = BuildLoop(tools=tools, dispatch_fn=_dispatch("[]"))
+    errs = await loop._validate_ops([
+        {"path": "archie_engine/x.py", "action": "edit", "old_string": "TARGET", "new_string": "NEW"},
+        {"path": "archie_engine/y.py", "action": "write", "content": "x = 1\n"},
+    ])
+    assert errs == []
+
+
+async def test_validate_ops_flags_scope_and_unknown_action():
+    loop = BuildLoop(tools=FakeTools(), dispatch_fn=_dispatch("[]"))
+    errs = await loop._validate_ops([
+        {"path": ".env", "action": "write", "content": "x"},
+        {"path": "archie_engine/x.py", "action": "delete"},
+    ])
+    assert len(errs) == 2
+    assert any("out-of-scope" in e for e in errs)
+    assert any("unknown action" in e for e in errs)
+
+
+async def test_plan_retries_then_succeeds():
+    # garbage first, valid write ops second → the retry recovers and the build completes.
+    tools = FakeTools()
+    disp = _dispatch_seq("not json at all", OPS)
+    r = await BuildLoop(tools=tools, dispatch_fn=disp, plan_max_retries=2).run("feat")
+    assert r.success, (r.stage, r.error)
+    assert disp.state["i"] == 2  # exactly one retry
+    assert r.pr_url == "https://gh/pr/7"
+
+
+async def test_plan_retry_feeds_back_the_validation_error():
+    # attempt 1: an edit whose old_string isn't in the file → validation rejects it;
+    # attempt 2: a clean write → succeeds. The 2nd prompt must carry the specific error.
+    tools = FakeTools()
+    tools.set("file_ops", "read", ToolResult(success=True, output="file without the target"))
+    disp = _dispatch_seq(EDIT_OK, OPS)
+    r = await BuildLoop(tools=tools, dispatch_fn=disp, plan_max_retries=2).run("feat")
+    assert r.success, (r.stage, r.error)
+    assert disp.state["i"] == 2
+    assert "old_string not found" in disp.state["prompts"][1]  # error fed back
+
+
+async def test_plan_exhausts_retries_then_fails_at_plan():
+    tools = FakeTools()
+    bad = '[{"path": ".env", "action": "write", "content": "x"}]'  # always out-of-scope
+    r = await BuildLoop(tools=tools, dispatch_fn=_dispatch(bad), plan_max_retries=1).run("x")
+    assert not r.success and r.stage == "plan"
+    assert "2 attempts" in r.error  # 1 + plan_max_retries
+    assert ("file_ops", "write") not in tools.seq()  # nothing written
