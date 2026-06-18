@@ -24,7 +24,12 @@ class _StubGitHub(GitHubOpsTool):
 
 # --- guard rails (fail closed) ---
 
-async def test_pr_create_requires_token():
+async def test_pr_create_requires_token(monkeypatch):
+    # Hermetic: GitHubOpsTool(token="") falls back to ARCHIE_GITHUB_TOKEN/
+    # GITHUB_TOKEN from the env, which the engine container injects (#4258). Clear
+    # them so this guard-rail asserts the no-token path regardless of runtime env.
+    monkeypatch.delenv("ARCHIE_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     r = await GitHubOpsTool(token="").execute(operation="pr_create", title="x", head="feat/x")
     assert not r.success and "token" in r.error.lower()
 
