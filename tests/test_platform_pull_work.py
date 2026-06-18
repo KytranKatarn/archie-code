@@ -1,16 +1,12 @@
 """Tests for the engine->platform pull-work expansion (#380).
 
-Covers PLATFORM_SCOPE allow/deny, the proposal->task helpers, and pull_and_build's
-scope filtering + target routing (no live hub/GitHub — pull_and_build is exercised
-against a stub engine with a fake connector + recording run_build).
+Covers PLATFORM_SCOPE allow/deny, the issue->task helper, and pull_and_build's
+scope filtering + target routing. pull_and_build sources the ISSUES queue (the
+per-file findings that carry a file_path). No live hub/GitHub — pull_and_build is
+exercised against a stub engine with a fake connector + a recording run_build.
 """
 
-from archie_engine.engine import (
-    Engine,
-    _format_proposal_task,
-    _module_from_path,
-    _proposal_path,
-)
+from archie_engine.engine import Engine, _format_issue_task, _module_from_path
 from archie_engine.scope_guard import PLATFORM_SCOPE, is_in_scope
 
 
@@ -36,33 +32,29 @@ def test_module_from_path():
     assert _module_from_path("") is None
 
 
-def test_proposal_path_from_column_or_metadata():
-    assert _proposal_path({"file_path": "a/b.py"}) == "a/b.py"
-    assert _proposal_path({"metadata": {"file_path": "c/d.py"}}) == "c/d.py"
-    assert _proposal_path({}) == ""
-    assert _proposal_path("not a dict") == ""
-
-
-def test_format_proposal_task_includes_file_and_title():
-    t = _format_proposal_task({"title": "Fix X", "description": "details here"},
-                              "platform_v2/tools/doc/routes.py")
+def test_format_issue_task_includes_file_and_message():
+    t = _format_issue_task(
+        {"message": "unused import", "suggestion": "remove it", "severity": "low", "line_number": 12},
+        "platform_v2/tools/doc/routes.py",
+    )
     assert "platform_v2/tools/doc/routes.py" in t
-    assert "Fix X" in t
-    assert "details here" in t
+    assert "line 12" in t
+    assert "unused import" in t
+    assert "remove it" in t
 
 
 # ---- pull_and_build (stub engine; no live hub/GitHub) ------------------------
 
 
 class _Conn:
-    def __init__(self, proposals, error=False):
-        self._p = proposals
+    def __init__(self, issues, error=False):
+        self._i = issues
         self._error = error
 
-    async def get_repair_proposals(self, status="proposed"):
+    async def get_repair_issues(self, status="open", limit=100):
         if self._error:
             return {"error": "boom"}
-        return {"success": True, "proposals": self._p, "count": len(self._p)}
+        return {"success": True, "issues": self._i}
 
 
 class _StubEngine:
@@ -86,24 +78,24 @@ async def test_pull_and_build_queue_error():
 
 
 async def test_pull_and_build_noop_when_all_out_of_scope():
-    stub = _StubEngine(_Conn([{"id": 1, "file_path": "ai_bridge/agent_loop.py", "priority": 5}]))
+    stub = _StubEngine(_Conn([{"id": 1, "file_path": "ai_bridge/agent_loop.py", "severity": "high"}]))
     r = await Engine.pull_and_build(stub)
     assert r["success"] is True and r.get("skipped") is True
-    assert stub.run_build_calls == []  # nothing built — core-platform item filtered out
+    assert stub.run_build_calls == []  # core-platform finding filtered out
 
 
-async def test_pull_and_build_picks_highest_priority_in_scope():
+async def test_pull_and_build_picks_highest_severity_in_scope():
     stub = _StubEngine(_Conn([
-        {"id": 1, "file_path": "ai_bridge/x.py", "priority": 9},  # out of scope (ignored despite high pri)
-        {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "title": "Fix fitness", "priority": 3},
-        {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "title": "Fix doc", "priority": 7},
+        {"id": 1, "file_path": "ai_bridge/x.py", "severity": "critical"},  # out of scope (ignored)
+        {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "message": "m", "severity": "low"},
+        {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "message": "m", "severity": "high"},
     ]))
     r = await Engine.pull_and_build(stub)
     assert len(stub.run_build_calls) == 1
     call = stub.run_build_calls[0]
     assert call["target"] == "archie-platform"
-    assert call["module"] == "doc"  # highest-priority IN-SCOPE wins (7 > 3)
-    assert r.get("proposal_id") == 3
+    assert call["module"] == "doc"  # highest-severity IN-SCOPE wins (high > low)
+    assert r.get("issue_id") == 3
 
 
 async def test_run_build_rejects_unknown_target():
