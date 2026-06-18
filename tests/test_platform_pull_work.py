@@ -62,7 +62,7 @@ class _StubEngine:
         self.hub_connector = conn
         self.run_build_calls = []
 
-    async def run_build(self, task, base="main", module=None, target="archie-code"):
+    async def run_build(self, task, base="main", module=None, target="archie-code", target_file=None):
         self.run_build_calls.append({"task": task, "module": module, "target": target})
         return {"success": True, "stage": "done", "pr_url": "x", "branch": "engine/x"}
 
@@ -141,7 +141,7 @@ class _StubEngineDedup:
         self.config = _Cfg()
         self.run_build_calls = []
 
-    async def run_build(self, task, base="main", module=None, target="archie-code"):
+    async def run_build(self, task, base="main", module=None, target="archie-code", target_file=None):
         self.run_build_calls.append({"module": module, "target": target})
         return {"success": True, "stage": "done", "pr_url": "x", "branch": "engine/x"}
 
@@ -196,7 +196,7 @@ class _StubEngineCfgLimit:
         self.config = _Cfg()
         self.run_build_calls = []
 
-    async def run_build(self, task, base="main", module=None, target="archie-code"):
+    async def run_build(self, task, base="main", module=None, target="archie-code", target_file=None):
         self.run_build_calls.append({"module": module, "target": target})
         return {"success": True, "stage": "done", "pr_url": "x", "branch": "engine/x"}
 

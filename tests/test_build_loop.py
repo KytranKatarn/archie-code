@@ -271,3 +271,40 @@ async def test_plan_exhausts_retries_then_fails_at_plan():
     assert not r.success and r.stage == "plan"
     assert "2 attempts" in r.error  # 1 + plan_max_retries
     assert ("file_ops", "write") not in tools.seq()  # nothing written
+
+
+# --- #380 Phase 2b: target-file content injected into the plan prompt --------
+
+def test_plan_prompt_includes_file_content_when_given():
+    from archie_engine.build_loop import _plan_prompt
+
+    p = _plan_prompt("do x", ["archie_engine/"], file_path="archie_engine/x.py",
+                     file_content="line A\nTARGET = 1\n")
+    assert "<<<FILE archie_engine/x.py>>>" in p and "TARGET = 1" in p
+    # absent (byte-for-byte unchanged) when no file content supplied
+    assert "<<<FILE" not in _plan_prompt("do x", ["archie_engine/"])
+
+
+def test_target_file_and_line_parsing():
+    from archie_engine.build_loop import _target_file_from_task, _extract_line
+
+    t = "Fix it. File: platform_v2/tools/doc/routes.py (line 31)"
+    assert _target_file_from_task(t) == "platform_v2/tools/doc/routes.py"
+    assert _extract_line(t) == 31
+    assert _target_file_from_task("no file here") is None
+    assert _extract_line("no line number") is None
+
+
+async def test_plan_injects_file_content_so_real_old_string_validates():
+    # The model copies the REAL line from the injected file content → old_string exists →
+    # validates on the first try (the Phase 2b fix for hallucinated old_strings).
+    tools = FakeTools()
+    tools.set("file_ops", "read", ToolResult(success=True, output="header\nTARGET = 1\nfooter\n"))
+    edit = '[{"path":"archie_engine/x.py","action":"edit","old_string":"TARGET = 1","new_string":"TARGET = 2"}]'
+    disp = _dispatch_seq(edit)
+    loop = BuildLoop(tools=tools, dispatch_fn=disp, plan_max_retries=0)
+    ops, err = await loop._plan_with_retries("Fix it. File: archie_engine/x.py (line 2)")
+    assert err is None and len(ops) == 1, (err, ops)
+    # the actual file content was injected into the prompt the model saw
+    assert "<<<FILE archie_engine/x.py>>>" in disp.state["prompts"][0]
+    assert "TARGET = 1" in disp.state["prompts"][0]

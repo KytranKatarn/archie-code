@@ -452,7 +452,7 @@ class Engine:
             return {"success": False, "error": str(e)}
 
     async def run_build(self, task: str, base: str = "main", module: str | None = None,
-                         target: str = "archie-code") -> dict:
+                         target: str = "archie-code", target_file: str | None = None) -> dict:
         """Run one autonomous coordinate→build→test→deploy cycle (#4256).
 
         target='archie-code' (default) builds the engine's OWN repo in /workspace
@@ -464,7 +464,7 @@ class Engine:
         and NEVER merges. Engine-authored PRs are additionally gated from auto-merge
         platform-side (branch "engine/" → human merge only).
         """
-        from archie_engine.build_loop import BuildLoop
+        from archie_engine.build_loop import BuildLoop, OPS_SCHEMA
         from archie_engine.scope_guard import PLATFORM_SCOPE
 
         # Validate the target up front — an unknown value must NOT silently fall
@@ -485,12 +485,13 @@ class Engine:
                     module_id="archie_code_engine",
                 )
             # hub offline → strictly-local fallback (engine's own Ollama). Constrain to
-            # valid JSON so the op-list always parses (#380 Phase 1). The hub path's
-            # format pass-through is a follow-up (DHQ-side).
+            # the op-array SCHEMA so the list always parses (#380 Phase 2 — bare "json"
+            # forced object-shaped JSON the array parser rejected). The hub path's format
+            # pass-through is a follow-up (DHQ-side).
             resp = await self.inference.chat(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.config.default_model,
-                format="json",
+                format=OPS_SCHEMA,
             )
             msg = resp.get("message", {}) if isinstance(resp, dict) else {}
             return msg.get("content", "") if isinstance(msg, dict) else ""
@@ -519,8 +520,9 @@ class Engine:
             test_command=test_command,
             test_timeout=self.config.build_test_timeout,
             plan_max_retries=self.config.build_plan_max_retries,
+            plan_file_budget=self.config.build_plan_file_budget,
         )
-        result = await loop.run(task, base=base, module=module)
+        result = await loop.run(task, base=base, module=module, target_file=target_file)
         await loop.emit_telemetry(result)
         return {
             "success": result.success,
@@ -589,7 +591,7 @@ class Engine:
             "[pull_and_build] building issue #%s (%s, module=%s, sev=%s) → archie-platform",
             picked.get("id"), fp, module, picked.get("severity"),
         )
-        result = await self.run_build(task, target="archie-platform", module=module)
+        result = await self.run_build(task, target="archie-platform", module=module, target_file=fp)
         result["issue_id"] = picked.get("id")
         result["file_path"] = fp
         return result
