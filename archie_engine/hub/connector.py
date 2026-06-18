@@ -276,6 +276,25 @@ class HubConnector:
             data={"module": module} if module else {},
         )
 
+    async def get_repair_proposals(self, status: str = "proposed") -> dict:
+        """Read the Repair Bay improvement-proposal work queue (#4259 / #380 pull-work).
+        GET /api/internal/repair/proposals?status= → {success, proposals[], count}.
+        Same INTERNAL_API_KEY bearer as the other internal reads.
+        """
+        return await self.get(
+            "/api/internal/repair/proposals",
+            params={"status": status} if status else None,
+        )
+
+    async def get_repair_issues(self, status: str = "open", limit: int = 50) -> dict:
+        """Read the open Code-Health issue work queue (#4259).
+        GET /api/internal/repair/issues?status=&limit= → {success, issues[]}.
+        """
+        return await self.get(
+            "/api/internal/repair/issues",
+            params={"status": status, "limit": str(limit)},
+        )
+
     async def dhq_complete(self, prompt: str, system_prompt: str | None = None,
                            capability: str | None = None,
                            prefer_agent: str | None = None,

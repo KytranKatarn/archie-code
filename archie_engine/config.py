@@ -65,6 +65,22 @@ class EngineConfig:
         "ARCHIE_ENGINE_TEST_TIMEOUT", "600"
     )))
 
+    # Platform-target build (#380 engine→platform expansion). The engine clones
+    # archie-platform into a SECOND workspace and builds fixes for the platform's
+    # Applications/Concepts modules there (PLATFORM_SCOPE). The platform test step is
+    # services-free — it just compiles the applied files (no DB/Redis/Ollama); the real
+    # gate is F.O.R.G.E. review + Repair Bay QA + the human merge gate.
+    platform_workspace: str = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_PLATFORM_WORKSPACE", "/workspace-platform"
+    ))
+    platform_repo: str = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_PLATFORM_REPO", "KytranKatarn/archie-platform"
+    ))
+    platform_test_command: str = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_ENGINE_PLATFORM_TEST_COMMAND",
+        "git diff --name-only -- '*.py' | xargs -r python -m py_compile",
+    ))
+
     # Inbound (hub dispatches work here)
     inbound_host: str = field(default_factory=lambda: os.environ.get(
         "ARCHIE_INBOUND_HOST", "0.0.0.0"
