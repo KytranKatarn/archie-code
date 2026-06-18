@@ -214,14 +214,28 @@ class HubConnector:
             "source": "archie-code",
         })
 
-    async def dhq_complete(self, prompt: str, system_prompt: str | None = None) -> str:
+    async def dhq_complete(self, prompt: str, system_prompt: str | None = None,
+                           capability: str | None = None,
+                           prefer_agent: str | None = None,
+                           module_id: str | None = None) -> str:
         """Synchronous, strictly-local DHQ completion — for the build loop's plan
         step (#4256). POSTs to /api/internal/dhq/chat, which routes through the
         dispatcher (welfare + cost + cold-load queue, local_only) and returns the
         reply text synchronously. This is the DHQ path — NOT a direct Ollama call.
+
+        capability/prefer_agent/module_id target a specific agent: the build
+        loop's plan step sends capability="code"/prefer_agent="F.O.R.G.E." so a
+        coder — not the cockpit's A.R.C.H.I.E. conversation voice — writes the
+        file-op plan. Omitting them keeps the endpoint's A.R.C.H.I.E. default.
         """
-        resp = await self.post("/api/internal/dhq/chat",
-                               data={"prompt": prompt, "system_prompt": system_prompt})
+        payload: dict = {"prompt": prompt, "system_prompt": system_prompt}
+        if capability is not None:
+            payload["capability"] = capability
+        if prefer_agent is not None:
+            payload["prefer_agent"] = prefer_agent
+        if module_id is not None:
+            payload["module_id"] = module_id
+        resp = await self.post("/api/internal/dhq/chat", data=payload)
         if isinstance(resp, dict):
             return resp.get("response", "") or ""
         return ""
