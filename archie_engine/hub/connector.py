@@ -223,10 +223,11 @@ class HubConnector:
         dispatcher (welfare + cost + cold-load queue, local_only) and returns the
         reply text synchronously. This is the DHQ path — NOT a direct Ollama call.
 
-        capability/prefer_agent/module_id target a specific agent: the build
-        loop's plan step sends capability="code"/prefer_agent="F.O.R.G.E." so a
-        coder — not the cockpit's A.R.C.H.I.E. conversation voice — writes the
-        file-op plan. Omitting them keeps the endpoint's A.R.C.H.I.E. default.
+        Optional capability/prefer_agent/module_id target a specific agent: the
+        build loop's plan step sends capability="code"/prefer_agent="F.O.R.G.E."
+        so a coder — not the cockpit's A.R.C.H.I.E. conversation voice — writes
+        the file-op plan. All three are optional; omitting them keeps the
+        endpoint's A.R.C.H.I.E. default.
         """
         payload: dict = {"prompt": prompt, "system_prompt": system_prompt}
         if capability is not None:
