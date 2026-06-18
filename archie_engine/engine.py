@@ -27,6 +27,7 @@ from archie_engine.claude.context_bridge import ContextBridge
 from archie_engine.dispatch_strategy import DispatchStrategy, DispatchTarget, DispatchDecision
 from archie_engine.state_sync import StateSyncChannel, SyncEvent
 from archie_engine.learning import LearningStore
+from archie_engine.dedup_tracker import DedupTracker
 from archie_engine.claude.escalation import EscalationDetector
 from archie_engine.claude.mcp_server import MCPToolServer
 from archie_engine.personality import PersonalityBuilder
@@ -119,6 +120,9 @@ class Engine:
 
         # Learning store for escalation patterns
         self.learning_store = LearningStore(data_dir=config.data_dir)
+
+        # Dedup for autonomous pull-work (#380) — rotate through issues, don't repeat.
+        self.dedup_tracker = DedupTracker(config.data_dir)
 
     @property
     def hub_status(self) -> HubStatus:
@@ -547,15 +551,27 @@ class Engine:
             return {"success": False, "error": f"queue read failed: {resp}"}
         issues = resp.get("issues", []) or []
 
-        in_scope = [i for i in issues if i.get("file_path") and is_in_scope(i["file_path"], PLATFORM_SCOPE)]
+        # Dedup: skip issues attempted within the cooldown so the autonomous loop
+        # ROTATES through findings instead of hammering the top one (#380).
+        tracker = getattr(self, "dedup_tracker", None)
+        cooldown = getattr(getattr(self, "config", None), "autopull_cooldown_sec", 21600)
+        in_scope = [
+            i for i in issues
+            if i.get("file_path") and is_in_scope(i["file_path"], PLATFORM_SCOPE)
+            and not (tracker and tracker.should_skip(i.get("id"), cooldown))
+        ]
         if not in_scope:
-            logger.info("[pull_and_build] no in-scope platform issues (%d in queue) — no-op", len(issues))
+            logger.info("[pull_and_build] no in-scope un-attempted platform issues (%d in queue) — no-op", len(issues))
             return {"success": True, "skipped": True, "reason": "no in-scope issue",
                     "queue_size": len(issues)}
 
         _sev = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
         in_scope.sort(key=lambda i: -_sev.get((i.get("severity") or "").lower(), 0))
         picked = in_scope[0]
+        # Record the attempt BEFORE building — so even a failed build rotates the loop
+        # to a different issue next cycle (instead of retrying the same failing one).
+        if tracker:
+            tracker.record(picked.get("id"))
         fp = picked["file_path"]
         module = _module_from_path(fp)
         task = _format_issue_task(picked, fp)

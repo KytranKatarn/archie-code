@@ -80,6 +80,11 @@ class EngineConfig:
         "ARCHIE_ENGINE_PLATFORM_TEST_COMMAND",
         "git diff --name-only -- '*.py' | xargs -r python -m py_compile",
     ))
+    # Autonomous pull-work dedup (#380): skip issues attempted within this window so
+    # the scheduler rotates through findings instead of hammering the top one (6h).
+    autopull_cooldown_sec: int = field(default_factory=lambda: int(os.environ.get(
+        "ARCHIE_AUTOPULL_COOLDOWN_SEC", "21600"
+    )))
 
     # Inbound (hub dispatches work here)
     inbound_host: str = field(default_factory=lambda: os.environ.get(
