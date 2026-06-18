@@ -11,7 +11,10 @@ from archie_engine.hub.auth import HubAuth
 # (config.hub_timeout, ~10s). Give it its own generous timeout so the build
 # loop's plan step does not time out on F.O.R.G.E. inference (override via
 # ARCHIE_DHQ_TIMEOUT). #4256.
-_DHQ_COMPLETE_TIMEOUT = int(os.environ.get("ARCHIE_DHQ_TIMEOUT", "300"))
+try:
+    _DHQ_COMPLETE_TIMEOUT = int(os.environ.get("ARCHIE_DHQ_TIMEOUT", "300"))
+except (TypeError, ValueError):
+    _DHQ_COMPLETE_TIMEOUT = 300  # ignore a malformed override; keep the safe default
 
 logger = logging.getLogger(__name__)
 
