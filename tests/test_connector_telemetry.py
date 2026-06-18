@@ -124,3 +124,14 @@ async def test_dhq_complete_empty_when_no_response():
 
     c.post = fake_post
     assert await c.dhq_complete("x") == ""
+
+
+def test_resolve_timeout_wraps_int_and_passes_default_through():
+    """aiohttp rejects a bare int session timeout; a per-call override must be wrapped."""
+    import aiohttp
+    from archie_engine.hub.connector import _resolve_timeout
+    default = aiohttp.ClientTimeout(total=10)
+    wrapped = _resolve_timeout(300, default)
+    assert isinstance(wrapped, aiohttp.ClientTimeout)
+    assert wrapped.total == 300
+    assert _resolve_timeout(None, default) is default
