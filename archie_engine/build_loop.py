@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 
 from archie_engine.scope_guard import is_in_scope
@@ -247,7 +248,9 @@ class BuildLoop:
 
 def _branch_name(task: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (task or "").lower()).strip("-")[:40] or "task"
-    return f"engine/{slug}"
+    # Short unique suffix so a RETRY of the same task never collides with a stale
+    # local branch in the persistent /workspace (the autonomous loop hits this; #4322).
+    return f"engine/{slug}-{uuid.uuid4().hex[:6]}"
 
 
 def _commit_message(task: str) -> str:

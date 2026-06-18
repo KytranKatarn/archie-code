@@ -182,5 +182,7 @@ def test_parse_ops_tolerant():
 
 
 def test_branch_name_slugifies():
-    assert _branch_name("Add Feature X!") == "engine/add-feature-x"
-    assert _branch_name("") == "engine/task"
+    # #4322: a short unique suffix is appended so retries never collide — assert the
+    # slugified prefix, not an exact match.
+    assert _branch_name("Add Feature X!").startswith("engine/add-feature-x-")
+    assert _branch_name("").startswith("engine/task-")

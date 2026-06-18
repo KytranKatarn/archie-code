@@ -103,3 +103,60 @@ async def test_run_build_rejects_unknown_target():
     r = await Engine.run_build(object(), "do something", target="bogus")
     assert r["success"] is False
     assert "unknown build target" in r["error"]
+
+
+# ---- autonomous-scheduler prereqs: #4322 branch idempotency + dedup -----------
+
+
+def test_branch_name_is_unique_per_call():
+    from archie_engine.build_loop import _branch_name
+
+    a = _branch_name("fix the thing")
+    b = _branch_name("fix the thing")
+    assert a != b  # #4322: same task → different branch (unique suffix) → no retry collision
+    assert a.startswith("engine/fix-the-thing-")
+
+
+def test_dedup_tracker_skip_and_expiry(tmp_path):
+    from archie_engine.dedup_tracker import DedupTracker
+
+    t = DedupTracker(tmp_path)
+    assert not t.should_skip(42, 3600)   # never attempted
+    t.record(42)
+    assert t.should_skip(42, 3600)       # within cooldown
+    assert not t.should_skip(42, 0)      # cooldown 0 → already expired
+    assert not t.should_skip(None, 3600)  # no id → never skip
+    # persists across instances (same data_dir)
+    assert DedupTracker(tmp_path).should_skip(42, 3600)
+
+
+class _StubEngineDedup:
+    def __init__(self, conn, tracker, cooldown=3600):
+        self.hub_connector = conn
+        self.dedup_tracker = tracker
+
+        class _Cfg:
+            autopull_cooldown_sec = cooldown
+
+        self.config = _Cfg()
+        self.run_build_calls = []
+
+    async def run_build(self, task, base="main", module=None, target="archie-code"):
+        self.run_build_calls.append({"module": module, "target": target})
+        return {"success": True, "stage": "done", "pr_url": "x", "branch": "engine/x"}
+
+
+async def test_pull_and_build_skips_attempted_issue(tmp_path):
+    from archie_engine.dedup_tracker import DedupTracker
+
+    tracker = DedupTracker(tmp_path)
+    tracker.record(2)  # the high-severity fitness issue was already attempted
+    conn = _Conn([
+        {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "severity": "high"},
+        {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "severity": "low"},
+    ])
+    stub = _StubEngineDedup(conn, tracker)
+    r = await Engine.pull_and_build(stub)
+    assert len(stub.run_build_calls) == 1
+    assert r.get("issue_id") == 3  # skipped attempted #2 (even though higher sev), rotated to #3
+    assert tracker.should_skip(3, 3600)  # #3 now recorded (before the build)
