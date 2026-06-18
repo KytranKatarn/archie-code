@@ -16,6 +16,18 @@ try:
 except (TypeError, ValueError):
     _DHQ_COMPLETE_TIMEOUT = 300  # ignore a malformed override; keep the safe default
 
+
+def _resolve_timeout(timeout, default):
+    """Resolve a per-call timeout for aiohttp.
+
+    A per-call override arrives as int seconds; aiohttp rejects a bare int as a
+    session timeout, so wrap it in a ClientTimeout. None → the connector default
+    (itself already a ClientTimeout).
+    """
+    if timeout is None:
+        return default
+    return aiohttp.ClientTimeout(total=timeout)
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +62,7 @@ class HubConnector:
         """
         url = f"{self.hub_url}{path}"
         try:
-            async with aiohttp.ClientSession(timeout=timeout or self.timeout) as session:
+            async with aiohttp.ClientSession(timeout=_resolve_timeout(timeout, self.timeout)) as session:
                 async with session.post(url, headers=self.auth.get_headers(), json=data) as resp:
                     result = await resp.json()
                     if resp.status >= 400:
