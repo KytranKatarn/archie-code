@@ -26,7 +26,7 @@ class FileOpsTool(BaseTool):
         operation = kwargs.get("operation", "")
 
         if operation == "read":
-            return await self._read(kwargs.get("path", ""))
+            return await self._read(kwargs.get("path", ""), kwargs.get("numbered", True))
         elif operation == "write":
             return await self._write(kwargs.get("path", ""), kwargs.get("content", ""))
         elif operation == "edit":
@@ -42,14 +42,18 @@ class FileOpsTool(BaseTool):
         else:
             return ToolResult(success=False, error=f"Unknown operation: '{operation}'")
 
-    async def _read(self, path: str) -> ToolResult:
+    async def _read(self, path: str, numbered: bool = True) -> ToolResult:
         resolved, err = self._resolve_path(path)
         if err:
             return ToolResult(success=False, error=err)
         try:
-            lines = resolved.read_text(encoding="utf-8").splitlines()
-            numbered = "\n".join(f"{i+1}: {line}" for i, line in enumerate(lines))
-            return ToolResult(success=True, output=numbered)
+            content = resolved.read_text(encoding="utf-8")
+            if not numbered:
+                # Raw mode — exact file bytes, for verbatim old_string validation.
+                return ToolResult(success=True, output=content)
+            lines = content.splitlines()
+            out = "\n".join(f"{i+1}: {line}" for i, line in enumerate(lines))
+            return ToolResult(success=True, output=out)
         except FileNotFoundError:
             return ToolResult(success=False, error=f"File not found: {path}")
         except Exception as e:

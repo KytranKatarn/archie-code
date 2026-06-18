@@ -484,10 +484,13 @@ class Engine:
                     prefer_agent="F.O.R.G.E.",
                     module_id="archie_code_engine",
                 )
-            # hub offline → strictly-local fallback (engine's own Ollama)
+            # hub offline → strictly-local fallback (engine's own Ollama). Constrain to
+            # valid JSON so the op-list always parses (#380 Phase 1). The hub path's
+            # format pass-through is a follow-up (DHQ-side).
             resp = await self.inference.chat(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.config.default_model,
+                format="json",
             )
             msg = resp.get("message", {}) if isinstance(resp, dict) else {}
             return msg.get("content", "") if isinstance(msg, dict) else ""
@@ -515,6 +518,7 @@ class Engine:
             max_files=self.config.build_max_files,
             test_command=test_command,
             test_timeout=self.config.build_test_timeout,
+            plan_max_retries=self.config.build_plan_max_retries,
         )
         result = await loop.run(task, base=base, module=module)
         await loop.emit_telemetry(result)

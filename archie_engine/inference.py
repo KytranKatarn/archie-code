@@ -40,11 +40,18 @@ class InferenceClient:
         messages: list[dict],
         model: str,
         system: str | None = None,
+        format: str | dict | None = None,
     ) -> dict:
-        """POST /api/chat — non-streaming chat completion."""
+        """POST /api/chat — non-streaming chat completion.
+
+        ``format`` maps to Ollama's structured-output constraint: "json" forces valid
+        JSON, or a JSON-schema dict forces schema-conformant output (constrained
+        decoding). Used by the build planner to guarantee a parseable op-list (#380)."""
         payload: dict = {"model": model, "messages": messages, "stream": False}
         if system:
             payload["system"] = system
+        if format:
+            payload["format"] = format
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(

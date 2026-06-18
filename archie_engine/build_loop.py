@@ -65,7 +65,8 @@ class BuildLoop:
                  test_command: str = DEFAULT_TEST_COMMAND,
                  test_timeout: int = DEFAULT_TEST_TIMEOUT,
                  capability: str = "code",  # informational; engine closure sets live dispatch capability
-                 model: str = "archie:7b"):
+                 model: str = "archie:7b",
+                 plan_max_retries: int = 2):
         """
         tools       — a ToolRegistry exposing file_ops / git_ops / github_ops / shell_ops.
         dispatch_fn — async callable(prompt:str) -> str: the coordinate step. In the
@@ -82,6 +83,7 @@ class BuildLoop:
         self.test_timeout = test_timeout
         self.capability = capability
         self.model = model
+        self.plan_max_retries = plan_max_retries
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -102,14 +104,13 @@ class BuildLoop:
         if not br.success:
             return self._done(result.fail("branch", br.error), start)
 
-        # 2. coordinate — plan the change set via DHQ
-        ops, plan_err = await self._plan(task)
+        # 2. coordinate — plan the change set via DHQ, then DRY-RUN validate the whole
+        # op-list and re-prompt the model with the exact error on a parse OR validation
+        # failure (model-independent reliability; #380 Phase 1). Nothing is written until
+        # every op is in-scope and every edit's old_string is confirmed present.
+        ops, plan_err = await self._plan_with_retries(task)
         if plan_err:
             return self._done(result.fail("plan", plan_err), start)
-        if not ops:
-            return self._done(result.fail("plan", "no file operations produced"), start)
-        if len(ops) > self.max_files:
-            return self._done(result.fail("plan", f"change set too large: {len(ops)} > {self.max_files} files"), start)
 
         # 3. build — apply each op, deny-by-default scope-guarded
         applied: list[str] = []
@@ -166,13 +167,17 @@ class BuildLoop:
     # Coordinate (LLM plan) — injected dispatch, robust parse
     # ------------------------------------------------------------------
 
-    async def _plan(self, task: str) -> tuple[list, str | None]:
+    async def _plan(self, task: str, feedback: str | None = None) -> tuple[list, str | None]:
         # Tell the planner the TARGET's allowed paths so it writes under the right
         # prefix (archie-code -> archie_engine/...; platform -> platform_v2/tools/...).
         from archie_engine.scope_guard import DEFAULT_ARCHIE_CODE_SCOPE
 
         allowed = (self.scope_config or DEFAULT_ARCHIE_CODE_SCOPE).get("allowed_paths", [])
         prompt = _plan_prompt(task, allowed)
+        if feedback:
+            # Re-prompt with the exact reason the last attempt was rejected (#380 Phase 1).
+            prompt = (f"{prompt}\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED:\n{feedback}\n"
+                      "Return a CORRECTED JSON array ONLY — no prose, no code fences.")
         try:
             raw = await self.dispatch_fn(prompt)
         except Exception as exc:  # dispatch failure is a graceful plan failure
@@ -181,6 +186,69 @@ class BuildLoop:
         if ops is None:
             return [], "could not parse a JSON op list from the plan"
         return ops, None
+
+    async def _plan_with_retries(self, task: str) -> tuple[list, str | None]:
+        """Plan → DRY-RUN validate the whole op-list before any file is touched. On a
+        parse failure or a validation failure, re-prompt the model with the exact error
+        (up to plan_max_retries). Corrects the two dominant small-model failure modes —
+        unparseable JSON and a hallucinated edit old_string — WITHOUT changing the model
+        (#380 Phase 1). A dispatch (infra) failure and the file-cap are not retried."""
+        feedback = None
+        last_err = "no plan produced"
+        attempts = 1 + max(0, self.plan_max_retries)
+        for _attempt in range(attempts):
+            ops, perr = await self._plan(task, feedback)
+            if perr:
+                if perr.startswith("dispatch failed"):
+                    return [], perr  # infra failure — retrying the same call won't help
+                last_err = perr
+                feedback = ("Your output was not a valid JSON array. Return ONLY a JSON "
+                            "array of file ops — no prose, no code fences.")
+                continue
+            if not ops:
+                last_err = "no file operations produced"
+                feedback = "Your plan had no file operations. Produce the ops needed to do the task."
+                continue
+            if len(ops) > self.max_files:
+                # Hard cap — not a model mistake to coach; fail fast.
+                return [], f"change set too large: {len(ops)} > {self.max_files} files"
+            verrs = await self._validate_ops(ops)
+            if verrs:
+                last_err = "; ".join(verrs[:5])
+                feedback = ("Your plan had these problems — fix EACH and return a corrected "
+                            "JSON array:\n" + "\n".join(f"- {e}" for e in verrs[:10]))
+                continue
+            return ops, None
+        return [], f"plan failed validation after {attempts} attempts: {last_err}"
+
+    async def _validate_ops(self, ops: list) -> list:
+        """Dry-run: confirm every op is applicable BEFORE mutating the workspace.
+        Returns a list of human-readable problems (empty = all good). For an 'edit',
+        reads the target file RAW and checks old_string exists verbatim — exactly the
+        condition file_ops._edit enforces, surfaced early so it can be re-prompted."""
+        errors: list = []
+        for idx, op in enumerate(ops):
+            op = op or {}
+            path = op.get("path")
+            action = op.get("action")
+            if not path or not is_in_scope(path, self.scope_config):
+                errors.append(f"op {idx}: out-of-scope or missing path: {path!r}")
+                continue
+            if action == "write":
+                continue
+            if action == "edit":
+                old = op.get("old_string", "")
+                if not old:
+                    errors.append(f"op {idx} ({path}): edit has an empty old_string")
+                    continue
+                rd = await self.tools.execute("file_ops", operation="read", path=path, numbered=False)
+                if not rd.success:
+                    errors.append(f"op {idx}: cannot read {path} to edit: {rd.error}")
+                elif old not in (getattr(rd, "output", "") or ""):
+                    errors.append(f"op {idx} ({path}): old_string not found verbatim: {old[:80]!r}")
+            else:
+                errors.append(f"op {idx} ({path}): unknown action {action!r}")
+        return errors
 
     # ------------------------------------------------------------------
     # Telemetry + finalisation

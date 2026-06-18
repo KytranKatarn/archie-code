@@ -64,6 +64,13 @@ class EngineConfig:
     build_test_timeout: int = field(default_factory=lambda: int(os.environ.get(
         "ARCHIE_ENGINE_TEST_TIMEOUT", "600"
     )))
+    # Planner reliability (#380 Phase 1): on a plan that won't parse OR fails dry-run
+    # validation (out-of-scope path / an edit whose old_string isn't in the file), the
+    # build loop re-prompts the model with the specific error this many times before
+    # failing. Model-independent — raises yield without changing the model.
+    build_plan_max_retries: int = field(default_factory=lambda: int(os.environ.get(
+        "ARCHIE_BUILD_PLAN_MAX_RETRIES", "2"
+    )))
 
     # Platform-target build (#380 engine→platform expansion). The engine clones
     # archie-platform into a SECOND workspace and builds fixes for the platform's
