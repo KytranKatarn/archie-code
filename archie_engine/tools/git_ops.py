@@ -104,9 +104,14 @@ class GitOpsTool(BaseTool):
                                     set_upstream=kwargs.get("set_upstream", True))
         elif operation == "clone":
             return await self._clone(kwargs.get("url"), kwargs.get("dest"))
+        elif operation == "fetch":
+            return await self._fetch(remote=kwargs.get("remote", "origin"),
+                                     branch=kwargs.get("branch"))
         elif operation == "worktree":
             return await self._worktree(action=kwargs.get("action", "list"),
-                                        path=kwargs.get("path"), branch=kwargs.get("branch"))
+                                        path=kwargs.get("path"), branch=kwargs.get("branch"),
+                                        base=kwargs.get("base") or kwargs.get("ref"),
+                                        force=kwargs.get("force", False))
         else:
             return ToolResult(success=False, error=f"Unknown operation: {operation}")
 
@@ -178,6 +183,17 @@ class GitOpsTool(BaseTool):
             if rc != 0:
                 return ToolResult(success=False, error=stderr.strip())
             return ToolResult(success=True, output=(stdout + stderr).strip())
+        elif action == "delete":
+            # Drop a local feature branch (e.g. a finished build branch — the PR, if any,
+            # lives on the remote). NEVER a protected branch.
+            if not name:
+                return ToolResult(success=False, error="branch delete requires a 'name'")
+            if name in PROTECTED_BRANCHES:
+                return ToolResult(success=False, error=f"refusing to delete protected branch '{name}'")
+            stdout, stderr, rc = await self._run_git("branch", "-D", name)
+            if rc != 0:
+                return ToolResult(success=False, error=stderr.strip())
+            return ToolResult(success=True, output=(stdout + stderr).strip())
         else:
             return ToolResult(success=False, error=f"Unknown branch action: {action}")
 
@@ -200,6 +216,17 @@ class GitOpsTool(BaseTool):
         if rc != 0:
             return ToolResult(success=False, error=stderr.strip())
         return ToolResult(success=True, output=(stdout + stderr).strip())
+
+    async def _fetch(self, remote: str = "origin", branch: str = None) -> ToolResult:
+        """Update remote-tracking refs (no working-tree change). Used to refresh
+        origin/<base> before carving a per-build worktree off it (#4253)."""
+        args = ["fetch", remote]
+        if branch:
+            args.append(branch)
+        stdout, stderr, rc = await self._run_git(*args)
+        if rc != 0:
+            return ToolResult(success=False, error=stderr.strip())
+        return ToolResult(success=True, output=(stdout + stderr).strip() or "fetched")
 
     async def _push(self, remote: str = "origin", set_upstream: bool = True) -> ToolResult:
         """Push the CURRENT feature branch upstream — refuses protected branches."""
@@ -241,8 +268,18 @@ class GitOpsTool(BaseTool):
             return ToolResult(success=False, error=stderr.strip())
         return ToolResult(success=True, output=(stdout + stderr).strip())
 
-    async def _worktree(self, action: str = "list", path: str = None, branch: str = None) -> ToolResult:
-        """Manage git worktrees (list / add / remove) for isolated builds."""
+    async def _worktree(self, action: str = "list", path: str = None, branch: str = None,
+                        base: str = None, force: bool = False) -> ToolResult:
+        """Manage git worktrees (list / add / remove) for isolated per-build trees.
+
+        add: ``git worktree add [-b <branch>] <path> [<base>]``. Pass ``base`` (e.g.
+        ``origin/main``) to carve a PRISTINE worktree at the latest fetched commit
+        regardless of the shared checkout's (possibly dirty) state — this is how the
+        build loop gets a clean tree per run without ever touching, or needing to
+        reset, the base checkout (#4253). No ``-b`` → a detached worktree at ``base``,
+        which the build loop then branches off internally.
+        remove: pass ``force=True`` to drop a worktree that still has changes (a
+        FAILED build leaves its edits behind — without --force git refuses)."""
         if action == "list":
             stdout, stderr, rc = await self._run_git("worktree", "list")
             if rc != 0:
@@ -255,6 +292,8 @@ class GitOpsTool(BaseTool):
             if branch:
                 args += ["-b", branch]
             args.append(path)
+            if base:
+                args.append(base)
             stdout, stderr, rc = await self._run_git(*args)
             if rc != 0:
                 return ToolResult(success=False, error=stderr.strip())
@@ -262,7 +301,11 @@ class GitOpsTool(BaseTool):
         elif action == "remove":
             if not path:
                 return ToolResult(success=False, error="worktree remove requires 'path'")
-            stdout, stderr, rc = await self._run_git("worktree", "remove", path)
+            args = ["worktree", "remove"]
+            if force:
+                args.append("--force")
+            args.append(path)
+            stdout, stderr, rc = await self._run_git(*args)
             if rc != 0:
                 return ToolResult(success=False, error=stderr.strip())
             return ToolResult(success=True, output=f"Removed worktree: {path}")

@@ -68,3 +68,60 @@ async def test_not_a_repo(tmp_path):
     tool = GitOpsTool(workspace=tmp_path)
     result = await tool.execute(operation="status")
     assert not result.success
+
+
+# --- per-build worktree isolation (#4253) ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_worktree_add_off_ref_and_remove(git_tool, tmp_path):
+    """worktree add off a base ref creates a pristine tree; remove deletes it."""
+    wt = tmp_path / "wt"
+    add = await git_tool.execute(operation="worktree", action="add",
+                                 path=str(wt), base="HEAD")
+    assert add.success, add.error
+    assert (wt / "README.md").exists()
+    rm = await git_tool.execute(operation="worktree", action="remove", path=str(wt))
+    assert rm.success, rm.error
+    assert not wt.exists()
+
+
+@pytest.mark.asyncio
+async def test_worktree_remove_needs_force_when_dirty(git_tool, tmp_path):
+    """A FAILED build leaves edits in its worktree — removal needs force=True."""
+    wt = tmp_path / "wt2"
+    add = await git_tool.execute(operation="worktree", action="add",
+                                 path=str(wt), base="HEAD")
+    assert add.success, add.error
+    (wt / "README.md").write_text("dirty edit from a failed build")
+    no_force = await git_tool.execute(operation="worktree", action="remove", path=str(wt))
+    assert not no_force.success  # git refuses to drop a dirty worktree
+    forced = await git_tool.execute(operation="worktree", action="remove",
+                                    path=str(wt), force=True)
+    assert forced.success, forced.error
+    assert not wt.exists()
+
+
+@pytest.mark.asyncio
+async def test_branch_delete(git_tool, git_repo):
+    await git_tool.execute(operation="branch", action="create", name="feature/x")
+    subprocess.run(["git", "-C", str(git_repo), "checkout", "-"], capture_output=True)
+    res = await git_tool.execute(operation="branch", action="delete", name="feature/x")
+    assert res.success, res.error
+
+
+@pytest.mark.asyncio
+async def test_branch_delete_refuses_protected(git_tool):
+    res = await git_tool.execute(operation="branch", action="delete", name="main")
+    assert not res.success
+    assert "protected" in res.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_fetch(git_tool, git_repo, tmp_path):
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin)], capture_output=True)
+    subprocess.run(["git", "-C", str(git_repo), "remote", "add", "origin", str(origin)], capture_output=True)
+    subprocess.run(["git", "-C", str(git_repo), "push", "origin", "HEAD"], capture_output=True)
+    res = await git_tool.execute(operation="fetch", remote="origin")
+    assert res.success, res.error

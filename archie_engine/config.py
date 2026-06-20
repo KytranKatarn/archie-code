@@ -100,6 +100,14 @@ class EngineConfig:
         "ARCHIE_ENGINE_PLATFORM_TEST_COMMAND",
         "git diff --name-only -- '*.py' | xargs -r python -m py_compile",
     ))
+    # Per-build worktree isolation (#4253). Each build runs in a throwaway git worktree
+    # carved off fresh origin/<base>, so repeated/concurrent runs never mutate — or read
+    # a dirty — shared checkout (the 0%-success root cause: branching off the prior failed
+    # run's dirty HEAD). Lives on the writable /data volume (rootfs is read-only; the
+    # /workspace[-platform] mounts hold the base checkouts and must not host worktrees).
+    worktree_root: str = field(default_factory=lambda: os.environ.get(
+        "ARCHIE_ENGINE_WORKTREE_ROOT", "/data/engine-worktrees"
+    ))
     # Autonomous pull-work dedup (#380): skip issues attempted within this window so
     # the scheduler rotates through findings instead of hammering the top one (6h).
     autopull_cooldown_sec: int = field(default_factory=lambda: int(os.environ.get(

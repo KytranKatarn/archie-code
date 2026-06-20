@@ -500,34 +500,79 @@ class Engine:
             msg = resp.get("message", {}) if isinstance(resp, dict) else {}
             return msg.get("content", "") if isinstance(msg, dict) else ""
 
-        # Per-target wiring. Defaults reproduce the archie-code path exactly.
+        # Per-target scope/repo. Every build runs in a THROWAWAY git worktree carved off
+        # fresh origin/<base>, so repeated/concurrent runs never mutate — or read a dirty —
+        # the shared checkout (#4253). This was the engine's 0%-success root cause: it
+        # branched off the previous failed run's dirty HEAD, so the planner read a
+        # corrupted file and every edit's old_string missed. The build loop creates its
+        # feature branch INSIDE the worktree exactly as before; only the workspace changed.
+        from archie_engine.tools.git_ops import GitOpsTool
+        import uuid as _uuid
+
         if target == "archie-platform":
-            tools = self._build_tool_registry(
-                workspace=Path(self.config.platform_workspace),
-                scope_config=PLATFORM_SCOPE,
-                repo=self.config.platform_repo,
-            )
+            base_dir = Path(self.config.platform_workspace)
             scope_config = PLATFORM_SCOPE
+            repo = self.config.platform_repo
             test_command = self.config.platform_test_command
         else:
-            tools = self.tools
+            base_dir = Path.cwd()
             scope_config = None  # → DEFAULT_ARCHIE_CODE_SCOPE
+            repo = None          # → default github_ops repo (archie-code)
             test_command = self.config.build_test_command
 
-        loop = BuildLoop(
-            tools=tools,
-            dispatch_fn=_plan_dispatch,
-            connector=self.hub_connector,
-            scope_config=scope_config,
-            model=self.config.default_model,
-            max_files=self.config.build_max_files,
-            test_command=test_command,
-            test_timeout=self.config.build_test_timeout,
-            plan_max_retries=self.config.build_plan_max_retries,
-            plan_file_budget=self.config.build_plan_file_budget,
-        )
-        result = await loop.run(task, base=base, module=module, target_file=target_file)
-        await loop.emit_telemetry(result)
+        base_git = GitOpsTool(workspace=base_dir, scope_config=scope_config)
+        wt_path = Path(self.config.worktree_root) / target / _uuid.uuid4().hex[:12]
+        try:
+            wt_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return {"success": False, "error": f"worktree root not writable: {exc}",
+                    "stage": "worktree", "branch": "", "files": [], "pr_url": None,
+                    "pr_number": None, "duration_ms": 0, "target": target}
+
+        # Refresh origin/<base>, then carve a pristine DETACHED worktree at it; the loop
+        # branches off it internally (checkout -b). A fetch failure (offline) is non-fatal
+        # — the worktree just builds off the last-known origin/<base>.
+        await base_git.execute(operation="fetch", remote="origin", branch=base)
+        wt = await base_git.execute(operation="worktree", action="add",
+                                    path=str(wt_path), base=f"origin/{base}")
+        if not wt.success:
+            return {"success": False, "error": f"worktree add failed: {wt.error}",
+                    "stage": "worktree", "branch": "", "files": [], "pr_url": None,
+                    "pr_number": None, "duration_ms": 0, "target": target}
+
+        result = None
+        try:
+            tools = self._build_tool_registry(
+                workspace=wt_path, scope_config=scope_config, repo=repo,
+            )
+            loop = BuildLoop(
+                tools=tools,
+                dispatch_fn=_plan_dispatch,
+                connector=self.hub_connector,
+                scope_config=scope_config,
+                model=self.config.default_model,
+                max_files=self.config.build_max_files,
+                test_command=test_command,
+                test_timeout=self.config.build_test_timeout,
+                plan_max_retries=self.config.build_plan_max_retries,
+                plan_file_budget=self.config.build_plan_file_budget,
+            )
+            result = await loop.run(task, base=base, module=module, target_file=target_file)
+            await loop.emit_telemetry(result)
+        finally:
+            # Always tear the worktree down + drop its local branch. A successful build
+            # already pushed the branch (the PR lives on the remote); a failed one leaves
+            # only local junk. This stops the shared checkout accreting stale engine/* refs.
+            await base_git.execute(operation="worktree", action="remove",
+                                   path=str(wt_path), force=True)
+            if result is not None and getattr(result, "branch", ""):
+                await base_git.execute(operation="branch", action="delete", name=result.branch)
+
+        if result is None:
+            return {"success": False, "error": "build loop did not produce a result",
+                    "stage": "build", "branch": "", "files": [], "pr_url": None,
+                    "pr_number": None, "duration_ms": 0, "target": target}
+
         return {
             "success": result.success,
             "stage": result.stage,
