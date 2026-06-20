@@ -104,6 +104,9 @@ class HubSync:
     async def sync_agents(self) -> None:
         """Download agent roster from hub and cache."""
         result = await self.connector.list_agents()
+        if result.get("retired"):
+            logger.debug("Agent sync skipped — %s", result["retired"])
+            return
         if "error" in result:
             logger.warning("Agent sync failed: %s", result["error"])
             return
@@ -117,6 +120,9 @@ class HubSync:
     async def sync_models(self) -> None:
         """Download model state from hub and cache."""
         result = await self.connector.get_model_state()
+        if result.get("retired"):
+            logger.debug("Model sync skipped — %s", result["retired"])
+            return
         if "error" in result:
             logger.warning("Model sync failed: %s", result["error"])
             return

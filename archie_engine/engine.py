@@ -304,6 +304,9 @@ class Engine:
         """Fetch personality data from hub and update the builder."""
         try:
             data = await self.hub_connector.get_personality(agent_id=2)  # ARCHIE is agent_id=2
+            if data.get("retired"):
+                logger.debug("Personality fetch skipped — %s", data["retired"])
+                return
             if "error" not in data:
                 self.personality.update_from_hub(data)
                 logger.info("Personality loaded: mood=%s", data.get("mood", {}).get("current", "unknown"))
