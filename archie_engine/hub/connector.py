@@ -12,9 +12,14 @@ from archie_engine.hub.auth import HubAuth
 # loop's plan step does not time out on F.O.R.G.E. inference (override via
 # ARCHIE_DHQ_TIMEOUT). #4256.
 try:
-    _DHQ_COMPLETE_TIMEOUT = int(os.environ.get("ARCHIE_DHQ_TIMEOUT", "300"))
+    # #4342 Option B: the plan model (qwen2.5-coder:7b) is evicted to the hub CPU tier
+    # (8GB Quadro VRAM full) where a structured-plan generation measures ~567s/plan —
+    # the old 300s default made the engine bail before the plan returned (0 PRs ever).
+    # 900s lets the slow-but-successful hub plan complete. Trade-off: a FAILED plan now
+    # takes up to 900s/attempt. Durable fix is GPU-routing the plan (#4342); env-tunable.
+    _DHQ_COMPLETE_TIMEOUT = int(os.environ.get("ARCHIE_DHQ_TIMEOUT", "900"))
 except (TypeError, ValueError):
-    _DHQ_COMPLETE_TIMEOUT = 300  # ignore a malformed override; keep the safe default
+    _DHQ_COMPLETE_TIMEOUT = 900  # ignore a malformed override; keep the safe default
 
 
 def _resolve_timeout(timeout, default):
