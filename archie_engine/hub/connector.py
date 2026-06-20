@@ -186,12 +186,17 @@ class HubConnector:
         }
 
     async def list_agents(self) -> dict:
-        """List available agents on the hub."""
-        return await self.get("/api/starbase/agents")
+        """RETIRED (#4265). The /api/starbase/* roster endpoints were removed when
+        Starbase merged into Department HQ (2026-04). The engine does not consume the
+        hub roster — DHQ selects the agent + model hub-side at dispatch time. Return a
+        retired sentinel (no HTTP) so callers skip cleanly instead of hitting a dead
+        route that now serves a 200 + HTML login page (and spams JSON-decode warnings)."""
+        return {"retired": "starbase agents endpoint removed (DHQ merge 2026-04)"}
 
     async def get_skills(self) -> dict:
-        """Get available skills from the hub."""
-        return await self.get("/api/starbase/skills")
+        """RETIRED (#4265) — /api/starbase/skills is gone. (Skill SYNC uses the live
+        /tools/consciousness/api/github/skills/sync route, not this method.)"""
+        return {"retired": "starbase skills endpoint removed (DHQ merge 2026-04)"}
 
     async def sync_skills(
         self, since: str | None = None, limit: int = 50
@@ -219,8 +224,9 @@ class HubConnector:
         )
 
     async def get_model_state(self) -> dict:
-        """Get current model load state from the hub."""
-        return await self.get("/api/starbase/models")
+        """RETIRED (#4265) — /api/starbase/models is gone (DHQ merge 2026-04). The
+        engine does not pick models locally; DHQ does that hub-side at dispatch."""
+        return {"retired": "starbase models endpoint removed (DHQ merge 2026-04)"}
 
     async def log_job(self, task: str, agent_name: str,
                       result_summary: str, duration_ms: int,
@@ -332,12 +338,13 @@ class HubConnector:
         return ""
 
     async def get_agent_status(self, agent_id: int) -> dict:
-        """Get current status of a specific agent."""
-        return await self.get(f"/api/starbase/agents/{agent_id}/status")
+        """RETIRED (#4265) — /api/starbase/agents/<id>/status is gone (DHQ merge 2026-04)."""
+        return {"retired": "starbase agent-status endpoint removed (DHQ merge 2026-04)"}
 
     async def get_personality(self, agent_id: int) -> dict:
-        """Get personality, mood, and relationship data for an agent."""
-        return await self.get(f"/tools/starbase/api/bridge/agent-personality/{agent_id}")
+        """RETIRED (#4265) — /tools/starbase/api/bridge/agent-personality is gone
+        (DHQ merge 2026-04). Engine personality falls back to its baseline."""
+        return {"retired": "starbase personality endpoint removed (DHQ merge 2026-04)"}
 
     async def store_learning(self, knowledge_type: str, title: str,
                              content: str, category: str = "escalation_learning") -> dict:
