@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,6 +21,8 @@ type model struct {
 	companion   *views.CompanionView
 	statusPanel *views.StatusPanel
 	explorer    *views.FileExplorer
+	editor      textarea.Model
+	editing     bool
 	client      *Client
 	sessionID   string
 	width       int
@@ -37,6 +40,10 @@ func initialModel(wsURL string) model {
 	ti.Prompt = "❯ "
 	ti.PromptStyle = InputPromptStyle
 
+	ed := textarea.New()
+	ed.Placeholder = "Edit file content — Ctrl+S apply · Esc cancel"
+	ed.CharLimit = 0 // unbounded; apply_edit is path-safe + size-bounded server-side
+
 	return model{
 		input:       ti,
 		chat:        views.NewChatView(),
@@ -45,6 +52,7 @@ func initialModel(wsURL string) model {
 		companion:   views.NewCompanionView(),
 		statusPanel: views.NewStatusPanel(),
 		explorer:    views.NewFileExplorer(),
+		editor:      ed,
 		client:      NewClient(wsURL),
 	}
 }
@@ -147,6 +155,30 @@ func getString(m map[string]interface{}, key string) string {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Edit mode (#4264 PR 3): the textarea owns all keys except apply/cancel.
+		if m.editing {
+			switch msg.String() {
+			case "ctrl+s":
+				if m.connected && m.explorer.OpenPath != "" {
+					_ = m.client.Send(map[string]interface{}{
+						"type":    "apply_edit",
+						"root":    m.explorer.CurrentRepo,
+						"path":    m.explorer.OpenPath,
+						"content": m.editor.Value(),
+					})
+				}
+				m.editing = false
+				m.editor.Blur()
+				return m, nil
+			case "esc":
+				m.editing = false
+				m.editor.Blur()
+				return m, nil
+			}
+			var ecmd tea.Cmd
+			m.editor, ecmd = m.editor.Update(msg)
+			return m, ecmd
+		}
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
 			m.client.Close()
@@ -179,6 +211,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "esc":
 			if m.explorer.Visible {
+				if m.explorer.Mode == "diff" {
+					m.explorer.Mode = "tree"
+					return m, nil
+				}
 				m.explorer.Visible = false
 				return m, nil
 			}
@@ -204,11 +240,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "backspace":
+			if m.explorer.Visible && m.explorer.Mode == "diff" {
+				m.explorer.Mode = "tree"
+				return m, nil
+			}
 			if m.explorer.Visible && m.explorer.Mode == "tree" {
 				m.explorer.Mode = "repo"
 				m.explorer.Selected = 0
 				m.explorer.OpenPath = ""
 				return m, nil
+			}
+		case "d":
+			if m.explorer.Visible && m.explorer.Mode != "repo" {
+				if m.connected {
+					payload := map[string]interface{}{"type": "git_diff", "root": m.explorer.CurrentRepo}
+					if m.explorer.OpenPath != "" {
+						payload["path"] = m.explorer.OpenPath
+					}
+					_ = m.client.Send(payload)
+				}
+				return m, nil
+			}
+		case "e":
+			if m.explorer.Visible && m.explorer.OpenPath != "" {
+				m.editing = true
+				m.editor.SetValue(m.explorer.OpenContent)
+				m.editor.Focus()
+				return m, textarea.Blink
 			}
 		case "tab":
 			m.skillPicker.Visible = !m.skillPicker.Visible
@@ -263,6 +321,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.explorer.Width = msg.Width
 		m.explorer.Height = msg.Height
+		m.editor.SetWidth(msg.Width - 4)
+		m.editor.SetHeight(msg.Height - 8)
 
 	case ConnectedMsg:
 		m.connected = true
@@ -317,6 +377,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "file_content":
 			m.explorer.OpenPath = msg.FilePath
 			m.explorer.OpenContent = msg.Content
+		case "git_diff":
+			m.explorer.DiffContent = msg.Diff
+			m.explorer.Mode = "diff"
+		case "apply_result":
+			if msg.ApplyError != "" {
+				m.chat.AddMessage("system", "apply failed: "+msg.ApplyError)
+			} else {
+				m.chat.AddMessage("system", fmt.Sprintf("✓ applied %s (%d bytes)", msg.FilePath, msg.ApplyBytes))
+				m.explorer.OpenContent = m.editor.Value()
+				if m.connected && m.explorer.OpenPath != "" {
+					_ = m.client.Send(map[string]interface{}{"type": "git_diff", "root": m.explorer.CurrentRepo, "path": m.explorer.OpenPath})
+				}
+			}
 		case "error":
 			m.chat.AddMessage("system", fmt.Sprintf("Error: %s", msg.Content))
 		case "platform_status":
@@ -455,6 +528,10 @@ func (m model) View() string {
 	}
 	if explorerSection := m.explorer.Render(); explorerSection != "" {
 		sections = append(sections, explorerSection)
+	}
+	if m.editing {
+		sections = append(sections, views.LCARSHeader("EDIT — "+m.explorer.OpenPath, ColorCyan, m.width))
+		sections = append(sections, m.editor.View())
 	}
 
 	mainContent := strings.Join(sections, "\n")

@@ -23,6 +23,10 @@ type EngineResponseMsg struct {
 	Truncated bool     `json:"truncated"`
 	FileRoot  string   `json:"root"`
 	FilePath  string   `json:"path"`
+	// git_diff / apply_edit (#4264 PR 3)
+	Diff       string `json:"diff"`
+	ApplyBytes int    `json:"bytes"`
+	ApplyError string `json:"error"`
 }
 
 type Skill struct {
