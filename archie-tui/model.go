@@ -351,6 +351,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.SessionID != "" {
 				m.sessionID = msg.SessionID
 			}
+			if msg.DispatchTarget != "" {
+				meta := "via " + msg.DispatchTarget
+				if msg.Intent != "" {
+					meta += " · " + msg.Intent
+				}
+				if msg.DispatchReason != "" {
+					meta += " — " + msg.DispatchReason
+				}
+				m.chat.AddMessage("system", meta)
+			}
 		case "session_created":
 			m.sessionID = msg.SessionID
 		case "hub_status":

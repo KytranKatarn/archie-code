@@ -10,6 +10,7 @@ type EngineResponseMsg struct {
 	NodeID         string   `json:"node_id"`
 	Skills         []Skill  `json:"skills"`
 	DispatchTarget string   `json:"dispatch_target"`
+	DispatchReason string   `json:"dispatch_reason"`
 	// Platform status fields
 	PlatformHub   string `json:"hub"`
 	PlatformModel string `json:"model"`
