@@ -28,6 +28,7 @@ type FileExplorer struct {
 	Truncated   bool
 	OpenPath    string
 	OpenContent string
+	DiffContent string // git diff for the current file/repo (mode "diff")
 	Width       int
 	Height      int
 }
@@ -85,6 +86,10 @@ func (e *FileExplorer) Render() string {
 		Foreground(lipgloss.Color("#00e5ff")).
 		Bold(true)
 
+	if e.Mode == "diff" {
+		return e.renderDiff(accent, dim)
+	}
+
 	var lines []string
 	if e.Mode == "repo" {
 		lines = append(lines, accent.Render("  Select a repo"))
@@ -135,6 +140,61 @@ func (e *FileExplorer) Render() string {
 		}
 		if len(body) > maxRows {
 			lines = append(lines, dim.Render(fmt.Sprintf("  …(%d more lines)", len(body)-maxRows)))
+		}
+	}
+
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00e5ff")).
+		Padding(1)
+	if e.Width > 4 {
+		border = border.Width(e.Width - 4)
+	}
+	return border.Render(strings.Join(lines, "\n"))
+}
+
+// renderDiff renders the working-tree diff with colored +/- lines (mode "diff").
+func (e *FileExplorer) renderDiff(accent, dim lipgloss.Style) string {
+	add := lipgloss.NewStyle().Foreground(lipgloss.Color("#34d399"))
+	del := lipgloss.NewStyle().Foreground(lipgloss.Color("#f87171"))
+	hdr := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b5cf6"))
+	text := lipgloss.NewStyle().Foreground(lipgloss.Color("#9ca3af"))
+
+	title := e.CurrentName
+	if e.OpenPath != "" {
+		title += " · " + e.OpenPath
+	}
+	var lines []string
+	lines = append(lines, accent.Render("  Diff — "+title))
+	lines = append(lines, dim.Render("  Esc/Bksp back · e edit · a apply"))
+	lines = append(lines, "")
+
+	if strings.TrimSpace(e.DiffContent) == "" {
+		lines = append(lines, dim.Render("  (no changes)"))
+	} else {
+		all := strings.Split(e.DiffContent, "\n")
+		total := len(all)
+		rows := e.visibleRows()
+		if total > rows {
+			all = all[:rows]
+		}
+		for _, l := range all {
+			var style lipgloss.Style
+			switch {
+			case strings.HasPrefix(l, "+++"), strings.HasPrefix(l, "---"),
+				strings.HasPrefix(l, "diff "), strings.HasPrefix(l, "@@"):
+				style = hdr
+			case strings.HasPrefix(l, "+"):
+				style = add
+			case strings.HasPrefix(l, "-"):
+				style = del
+			default:
+				style = text
+			}
+			lines = append(lines, style.Render("  "+l))
+		}
+		if total > rows {
+			lines = append(lines, dim.Render(fmt.Sprintf("  …(%d more lines)", total-rows)))
 		}
 	}
 
