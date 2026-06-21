@@ -361,6 +361,35 @@ class Engine:
         if msg_type == "state_sync":
             return self._handle_incoming_sync(msg)
 
+        # --- archie-tui coding surface (#4264): repo browse / diff / apply ---------
+        # Path-safe file ops against a selected workspace root (defaults to cwd). The TUI
+        # picks a repo via repo_list, then drives file_tree / file_read / git_diff /
+        # apply_edit against it. See workspace_ops for the trust boundary.
+        if msg_type == "repo_list":
+            from archie_engine.workspace_ops import list_repos
+
+            return {"type": "repo_list", "repos": list_repos()}
+
+        if msg_type == "file_tree":
+            from archie_engine.workspace_ops import file_tree
+
+            return {"type": "file_tree", **file_tree(msg.get("root"))}
+
+        if msg_type == "file_read":
+            from archie_engine.workspace_ops import read_file
+
+            return {"type": "file_content", **read_file(msg.get("root"), msg.get("path", ""))}
+
+        if msg_type == "git_diff":
+            from archie_engine.workspace_ops import git_diff
+
+            return {"type": "git_diff", **git_diff(msg.get("root"), msg.get("path"))}
+
+        if msg_type == "apply_edit":
+            from archie_engine.workspace_ops import write_file
+
+            return {"type": "apply_result", **write_file(msg.get("root"), msg.get("path", ""), msg.get("content", ""))}
+
         return {"type": "error", "error": f"Unknown message type: {msg_type}"}
 
     async def _get_platform_status(self) -> dict:
