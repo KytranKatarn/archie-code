@@ -19,6 +19,7 @@ type model struct {
 	skillPicker *views.SkillPicker
 	companion   *views.CompanionView
 	statusPanel *views.StatusPanel
+	explorer    *views.FileExplorer
 	client      *Client
 	sessionID   string
 	width       int
@@ -43,6 +44,7 @@ func initialModel(wsURL string) model {
 		skillPicker: views.NewSkillPicker(),
 		companion:   views.NewCompanionView(),
 		statusPanel: views.NewStatusPanel(),
+		explorer:    views.NewFileExplorer(),
 		client:      NewClient(wsURL),
 	}
 }
@@ -150,6 +152,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.client.Close()
 			return m, tea.Quit
 		case "enter":
+			if m.explorer.Visible {
+				return m.explorerEnter()
+			}
 			if m.skillPicker.Visible {
 				filtered := m.skillPicker.Filtered()
 				if len(filtered) > 0 && m.skillPicker.Selected < len(filtered) {
@@ -173,6 +178,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "esc":
+			if m.explorer.Visible {
+				m.explorer.Visible = false
+				return m, nil
+			}
 			if m.skillPicker.Visible {
 				m.skillPicker.Visible = false
 				return m, nil
@@ -183,15 +192,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.client.Send(map[string]interface{}{"type": "platform_status"})
 			}
 			return m, nil
+		case "ctrl+e":
+			m.explorer.Visible = !m.explorer.Visible
+			if m.explorer.Visible {
+				m.explorer.Mode = "repo"
+				m.explorer.Selected = 0
+				m.explorer.OpenPath = ""
+				if len(m.explorer.Repos) == 0 && m.connected {
+					_ = m.client.Send(map[string]interface{}{"type": "repo_list"})
+				}
+			}
+			return m, nil
+		case "backspace":
+			if m.explorer.Visible && m.explorer.Mode == "tree" {
+				m.explorer.Mode = "repo"
+				m.explorer.Selected = 0
+				m.explorer.OpenPath = ""
+				return m, nil
+			}
 		case "tab":
 			m.skillPicker.Visible = !m.skillPicker.Visible
 			return m, nil
 		case "up":
+			if m.explorer.Visible {
+				if m.explorer.Selected > 0 {
+					m.explorer.Selected--
+				}
+				return m, nil
+			}
 			if m.skillPicker.Visible && m.skillPicker.Selected > 0 {
 				m.skillPicker.Selected--
 				return m, nil
 			}
 		case "down":
+			if m.explorer.Visible {
+				if m.explorer.Selected < m.explorer.MaxIndex() {
+					m.explorer.Selected++
+				}
+				return m, nil
+			}
 			if m.skillPicker.Visible {
 				filtered := m.skillPicker.Filtered()
 				if m.skillPicker.Selected < len(filtered)-1 {
@@ -222,6 +261,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.statusPanel.Width < 25 {
 			m.statusPanel.Width = 25
 		}
+		m.explorer.Width = msg.Width
+		m.explorer.Height = msg.Height
 
 	case ConnectedMsg:
 		m.connected = true
@@ -260,6 +301,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				items = append(items, views.SkillItem{Name: s.Name, Description: s.Description})
 			}
 			m.skillPicker.Skills = items
+		case "repo_list":
+			var repos []views.RepoItem
+			for _, r := range msg.Repos {
+				repos = append(repos, views.RepoItem{Name: r.Name, Path: r.Path, Label: r.Label})
+			}
+			m.explorer.Repos = repos
+		case "file_tree":
+			m.explorer.Files = msg.Files
+			m.explorer.Truncated = msg.Truncated
+			if msg.FileRoot != "" {
+				m.explorer.CurrentRepo = msg.FileRoot
+			}
+			m.explorer.Selected = 0
+		case "file_content":
+			m.explorer.OpenPath = msg.FilePath
+			m.explorer.OpenContent = msg.Content
 		case "error":
 			m.chat.AddMessage("system", fmt.Sprintf("Error: %s", msg.Content))
 		case "platform_status":
@@ -303,6 +360,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// explorerEnter handles Enter in the file explorer: pick a repo (→ file_tree +
+// session working_dir) or open a file (→ file_read). #4264 PR 2.
+func (m model) explorerEnter() (tea.Model, tea.Cmd) {
+	if m.explorer.Mode == "repo" {
+		if m.explorer.Selected >= 0 && m.explorer.Selected < len(m.explorer.Repos) {
+			r := m.explorer.Repos[m.explorer.Selected]
+			m.explorer.CurrentRepo = r.Path
+			m.explorer.CurrentName = r.Name
+			m.explorer.Mode = "tree"
+			m.explorer.Selected = 0
+			m.explorer.Files = nil
+			m.explorer.OpenPath = ""
+			if m.connected {
+				_ = m.client.Send(map[string]interface{}{"type": "file_tree", "root": r.Path})
+				// Point the chat/build session at the chosen repo (was hardcoded ".").
+				_ = m.client.Send(map[string]interface{}{"type": "session_create", "working_dir": r.Path})
+			}
+		}
+		return m, nil
+	}
+	if m.explorer.Selected >= 0 && m.explorer.Selected < len(m.explorer.Files) {
+		path := m.explorer.Files[m.explorer.Selected]
+		if m.connected {
+			_ = m.client.Send(map[string]interface{}{"type": "file_read", "root": m.explorer.CurrentRepo, "path": path})
+		}
+	}
+	return m, nil
 }
 
 func (m model) View() string {
@@ -366,6 +452,9 @@ func (m model) View() string {
 	}
 	if skillSection != "" {
 		sections = append(sections, skillSection)
+	}
+	if explorerSection := m.explorer.Render(); explorerSection != "" {
+		sections = append(sections, explorerSection)
 	}
 
 	mainContent := strings.Join(sections, "\n")
