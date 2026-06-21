@@ -749,6 +749,7 @@ class Engine:
             "content": response_text,
             "intent": intent["type"],
             "dispatch_target": decision.target.value,
+            "dispatch_reason": decision.reason,  # surfaced inline by archie-tui (#4264 PR 4)
             "tool_calls": result.get("tool_calls", []),
         }
 
