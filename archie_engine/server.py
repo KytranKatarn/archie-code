@@ -66,6 +66,11 @@ class EngineServer:
             self._connections.discard(websocket)
 
     async def _process_message(self, msg: dict) -> dict:
+        # A valid-JSON but non-object frame (e.g. `42`, `"hi"`, `[]`) would raise
+        # AttributeError on .get below and kill the connection (the surrounding
+        # try only catches ConnectionClosed). Return a clean error frame instead.
+        if not isinstance(msg, dict):
+            return {"type": "error", "error": "message must be a JSON object"}
         msg_type = msg.get("type", "")
 
         if msg_type == "ping":

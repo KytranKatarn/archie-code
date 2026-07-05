@@ -28,9 +28,13 @@ type FileExplorer struct {
 	Truncated   bool
 	OpenPath    string
 	OpenContent string
-	DiffContent string // git diff for the current file/repo (mode "diff")
-	Width       int
-	Height      int
+	// OpenTruncated is set when the open file's preview was capped by the
+	// engine (200 KB). Editing is blocked while true to prevent writing a
+	// truncated buffer back over the original file.
+	OpenTruncated bool
+	DiffContent   string // git diff for the current file/repo (mode "diff")
+	Width         int
+	Height        int
 }
 
 func NewFileExplorer() *FileExplorer {

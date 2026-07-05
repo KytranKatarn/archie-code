@@ -23,9 +23,18 @@ class Heartbeat:
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        """Register with hub (or reconnect) and start heartbeat loop."""
+        """Register with hub (or reconnect) and start heartbeat loop.
+
+        The loop starts even when the initial register did not reach the hub:
+        ``_send_one_heartbeat`` self-heals OFFLINE -> CONNECTED on each probe, so
+        a transient hub outage / DNS blip at engine boot must not permanently
+        disable heartbeats (previously the loop only started on CONNECTED, so a
+        boot-time outage was unrecoverable for the life of the process). A
+        genuine credential failure (AUTH_FAILED) is not retried — it needs a
+        config fix, not a spin.
+        """
         await self._register()
-        if self.status == HubStatus.CONNECTED:
+        if self.status != HubStatus.AUTH_FAILED and not self.is_running:
             self._task = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self) -> None:

@@ -62,3 +62,18 @@ async def test_malformed_json(server):
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "error"
         assert "json" in response["error"].lower() or "JSON" in response["error"]
+
+
+@pytest.mark.asyncio
+async def test_non_object_json_frame(server):
+    """A valid-JSON non-object frame (e.g. 42) must return a clean error frame,
+    not raise AttributeError and drop the connection."""
+    uri = f"ws://{server.host}:{server.port}"
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps(42))
+        response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        assert response["type"] == "error"
+        # Connection must survive — a follow-up ping still works.
+        await ws.send(json.dumps({"type": "ping"}))
+        pong = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        assert pong["type"] == "pong"
