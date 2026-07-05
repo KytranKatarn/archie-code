@@ -3,21 +3,30 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
+// Client is a thin websocket client to the archie_engine. Decoded engine
+// messages are delivered on a single, persistent buffered channel (Messages);
+// a read-loop failure is reported once on Errs. This replaces the previous
+// per-message SetOnMessage re-registration, which lost messages arriving
+// between listener registrations and could deadlock the read loop entirely.
 type Client struct {
-	conn      *websocket.Conn
-	url       string
-	mu        sync.Mutex
-	onMessage func(map[string]interface{})
+	url      string
+	mu       sync.Mutex
+	conn     *websocket.Conn
+	messages chan map[string]interface{}
+	errs     chan error
 }
 
 func NewClient(url string) *Client {
-	return &Client{url: url}
+	return &Client{
+		url:      url,
+		messages: make(chan map[string]interface{}, 64),
+		errs:     make(chan error, 1),
+	}
 }
 
 func (c *Client) Connect() error {
@@ -25,8 +34,10 @@ func (c *Client) Connect() error {
 	if err != nil {
 		return fmt.Errorf("connect failed: %w", err)
 	}
+	c.mu.Lock()
 	c.conn = conn
-	go c.readLoop()
+	c.mu.Unlock()
+	go c.readLoop(conn)
 	return nil
 }
 
@@ -60,25 +71,41 @@ func (c *Client) Close() {
 	}
 }
 
-func (c *Client) SetOnMessage(fn func(map[string]interface{})) {
-	c.onMessage = fn
-}
+// Messages is the single persistent stream of decoded engine messages.
+func (c *Client) Messages() <-chan map[string]interface{} { return c.messages }
 
-func (c *Client) readLoop() {
-	defer c.Close()
+// Errs delivers the read-loop failure (disconnect) that ends the live
+// connection, so the UI can leave "connected" state instead of silently
+// dropping the user's messages.
+func (c *Client) Errs() <-chan error { return c.errs }
+
+func (c *Client) readLoop(conn *websocket.Conn) {
 	for {
-		_, message, err := c.conn.ReadMessage()
+		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("read error: %v", err)
+			c.mu.Lock()
+			// Only surface a disconnect for the connection that is still live;
+			// a conn already replaced by Close()/reconnect is expected to end.
+			live := c.conn == conn
+			if live {
+				c.conn = nil
+			}
+			c.mu.Unlock()
+			if live {
+				select {
+				case c.errs <- err:
+				default:
+				}
+			}
 			return
 		}
 		var msg map[string]interface{}
 		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("unmarshal error: %v", err)
 			continue
 		}
-		if c.onMessage != nil {
-			c.onMessage(msg)
-		}
+		// Single persistent reader (listenCmd); the 64-slot buffer absorbs the
+		// back-to-back response bursts (connect handshake, repo pick) that used
+		// to wedge the old per-message channel.
+		c.messages <- msg
 	}
 }

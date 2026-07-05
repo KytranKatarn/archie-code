@@ -33,11 +33,18 @@ class SessionManager:
         return cursor.lastrowid
 
     async def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
-        """Get recent message history for a session."""
-        return await self.db.fetchall(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?",
+        """Get the most recent `limit` messages for a session, oldest-first.
+
+        Previously this ordered ASC then LIMIT, which returns the OLDEST N rows —
+        so once a session exceeded `limit` messages the history froze on the first
+        N and never included new context. Select the newest N by monotonic id,
+        then reverse so callers still receive chronological (oldest-first) order.
+        """
+        rows = await self.db.fetchall(
+            "SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, limit),
         )
+        return list(reversed(rows))
 
     async def record_tool_call(self, session_id: str, tool_name: str, arguments: dict) -> int:
         """Record a tool call. Returns tool_call ID."""

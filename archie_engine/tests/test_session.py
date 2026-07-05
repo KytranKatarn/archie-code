@@ -53,6 +53,18 @@ async def test_get_history_limit(session_mgr):
 
 
 @pytest.mark.asyncio
+async def test_get_history_returns_newest(session_mgr):
+    """Regression: once a session exceeds `limit`, history must track the NEWEST
+    rows (chronological), not freeze on the oldest N."""
+    session = await session_mgr.create(working_dir="/tmp")
+    for i in range(20):
+        await session_mgr.add_message(session["id"], "user", f"msg {i}")
+    history = await session_mgr.get_history(session["id"], limit=5)
+    contents = [h["content"] for h in history]
+    assert contents == ["msg 15", "msg 16", "msg 17", "msg 18", "msg 19"]
+
+
+@pytest.mark.asyncio
 async def test_record_tool_call(session_mgr):
     session = await session_mgr.create(working_dir="/tmp")
     tool_id = await session_mgr.record_tool_call(

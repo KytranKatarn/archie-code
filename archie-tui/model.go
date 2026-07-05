@@ -97,52 +97,88 @@ func (m model) connectCmd() tea.Cmd {
 // and feeds it back into the Bubble Tea update loop.
 func (m model) listenCmd() tea.Cmd {
 	return func() tea.Msg {
-		ch := make(chan map[string]interface{}, 1)
-		m.client.SetOnMessage(func(msg map[string]interface{}) {
-			ch <- msg
-		})
-		raw := <-ch
-
-		// Parse into EngineResponseMsg
-		resp := EngineResponseMsg{
-			Type:           getString(raw, "type"),
-			SessionID:      getString(raw, "session_id"),
-			Content:        getString(raw, "content"),
-			Intent:         getString(raw, "intent"),
-			HubStatus:      getString(raw, "hub_status"),
-			NodeID:         getString(raw, "node_id"),
-			DispatchTarget: getString(raw, "dispatch_target"),
+		select {
+		case raw, ok := <-m.client.Messages():
+			if !ok {
+				return DisconnectedMsg{Err: fmt.Errorf("engine connection closed")}
+			}
+			return parseEngineMessage(raw)
+		case err := <-m.client.Errs():
+			return DisconnectedMsg{Err: err}
 		}
+	}
+}
 
-		// Parse skills array if present
-		if skillsRaw, ok := raw["skills"].([]interface{}); ok {
-			for _, s := range skillsRaw {
-				if sm, ok := s.(map[string]interface{}); ok {
-					resp.Skills = append(resp.Skills, Skill{
-						Name:        getString(sm, "name"),
-						Description: getString(sm, "description"),
-						Source:      getString(sm, "source"),
-					})
-				}
+// parseEngineMessage converts a decoded engine frame into an EngineResponseMsg.
+// It is pure (no client/IO) so it can be unit-tested. Every field the Update
+// switch reads MUST be extracted here: the frame is decoded into a map and never
+// unmarshalled into the struct, so the struct's json tags are not used and any
+// omitted field silently arrives zero-valued. That omission previously left the
+// whole coding surface dead (repo_list/file_tree/file_content/git_diff never
+// populated) and made a FAILED apply render as success (ApplyError always "").
+func parseEngineMessage(raw map[string]interface{}) EngineResponseMsg {
+	resp := EngineResponseMsg{
+		Type:           getString(raw, "type"),
+		SessionID:      getString(raw, "session_id"),
+		Content:        getString(raw, "content"),
+		Intent:         getString(raw, "intent"),
+		HubStatus:      getString(raw, "hub_status"),
+		NodeID:         getString(raw, "node_id"),
+		DispatchTarget: getString(raw, "dispatch_target"),
+		DispatchReason: getString(raw, "dispatch_reason"),
+		// Coding-surface fields (#4264): file_tree / file_content / git_diff /
+		// apply_result. The shared root/path/error keys are reused across message
+		// types — harmless because Update dispatches on Type first.
+		Files:      getStringSlice(raw, "files"),
+		Truncated:  getBool(raw, "truncated"),
+		FileRoot:   getString(raw, "root"),
+		FilePath:   getString(raw, "path"),
+		Diff:       getString(raw, "diff"),
+		ApplyBytes: getInt(raw, "bytes"),
+		ApplyError: getString(raw, "error"),
+	}
+
+	// repo_list: repos: [{name, path, label}]
+	if reposRaw, ok := raw["repos"].([]interface{}); ok {
+		for _, rr := range reposRaw {
+			if rm, ok := rr.(map[string]interface{}); ok {
+				resp.Repos = append(resp.Repos, Repo{
+					Name:  getString(rm, "name"),
+					Path:  getString(rm, "path"),
+					Label: getString(rm, "label"),
+				})
 			}
 		}
-
-		// Parse platform_status fields
-		if raw["hub"] != nil {
-			resp.PlatformHub = getString(raw, "hub")
-		}
-		if raw["model"] != nil {
-			resp.PlatformModel = getString(raw, "model")
-		}
-		if agentsMap, ok := raw["agents"].(map[string]interface{}); ok {
-			active, _ := agentsMap["active"].(float64)
-			total, _ := agentsMap["total"].(float64)
-			resp.AgentsActive = int(active)
-			resp.AgentsTotal = int(total)
-		}
-
-		return resp
 	}
+
+	// skills_list: skills: [{name, description, source}]
+	if skillsRaw, ok := raw["skills"].([]interface{}); ok {
+		for _, s := range skillsRaw {
+			if sm, ok := s.(map[string]interface{}); ok {
+				resp.Skills = append(resp.Skills, Skill{
+					Name:        getString(sm, "name"),
+					Description: getString(sm, "description"),
+					Source:      getString(sm, "source"),
+				})
+			}
+		}
+	}
+
+	// platform_status: hub / model / agents{active,total}
+	if raw["hub"] != nil {
+		resp.PlatformHub = getString(raw, "hub")
+	}
+	if raw["model"] != nil {
+		resp.PlatformModel = getString(raw, "model")
+	}
+	if agentsMap, ok := raw["agents"].(map[string]interface{}); ok {
+		active, _ := agentsMap["active"].(float64)
+		total, _ := agentsMap["total"].(float64)
+		resp.AgentsActive = int(active)
+		resp.AgentsTotal = int(total)
+	}
+
+	return resp
 }
 
 func getString(m map[string]interface{}, key string) string {
@@ -152,6 +188,33 @@ func getString(m map[string]interface{}, key string) string {
 	return ""
 }
 
+func getBool(m map[string]interface{}, key string) bool {
+	v, _ := m[key].(bool)
+	return v
+}
+
+func getInt(m map[string]interface{}, key string) int {
+	// JSON numbers decode into float64 in a map[string]interface{}.
+	if v, ok := m[key].(float64); ok {
+		return int(v)
+	}
+	return 0
+}
+
+func getStringSlice(m map[string]interface{}, key string) []string {
+	raw, ok := m[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -159,7 +222,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.editing {
 			switch msg.String() {
 			case "ctrl+s":
-				if m.connected && m.explorer.OpenPath != "" {
+				// Defensive: never write back a buffer sourced from a
+				// truncated read (entry is already blocked in the "e" handler).
+				if m.connected && m.explorer.OpenPath != "" && !m.explorer.OpenTruncated {
 					_ = m.client.Send(map[string]interface{}{
 						"type":    "apply_edit",
 						"root":    m.explorer.CurrentRepo,
@@ -263,6 +328,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			if m.explorer.Visible && m.explorer.OpenPath != "" {
+				if m.explorer.OpenTruncated {
+					m.chat.AddMessage("system", "Cannot edit: preview truncated at 200 KB — saving would discard everything past the cap.")
+					return m, nil
+				}
 				m.editing = true
 				m.editor.SetValue(m.explorer.OpenContent)
 				m.editor.Focus()
@@ -387,6 +456,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "file_content":
 			m.explorer.OpenPath = msg.FilePath
 			m.explorer.OpenContent = msg.Content
+			m.explorer.OpenTruncated = msg.Truncated
+			if msg.Truncated {
+				m.chat.AddMessage("system", "Note: file preview truncated at 200 KB — read-only (editing is blocked to prevent data loss).")
+			}
 		case "git_diff":
 			m.explorer.DiffContent = msg.Diff
 			m.explorer.Mode = "diff"
@@ -401,7 +474,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "error":
-			m.chat.AddMessage("system", fmt.Sprintf("Error: %s", msg.Content))
+			// Engine error frames carry the message under "error" (parsed into
+			// ApplyError); fall back to Content for any legacy shape.
+			errText := msg.ApplyError
+			if errText == "" {
+				errText = msg.Content
+			}
+			m.chat.AddMessage("system", "Error: "+errText)
 		case "platform_status":
 			m.statusPanel.Hub = msg.PlatformHub
 			m.statusPanel.Model = msg.PlatformModel
