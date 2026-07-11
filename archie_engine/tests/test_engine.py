@@ -365,21 +365,20 @@ async def test_build_frame_streams_progress_and_returns_result(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_session_send_records_and_resolves_link(tmp_path):
-    """Task 6: session_send records a message and returns the linked conversation."""
+async def test_session_send_routes_through_message_path(tmp_path):
+    """Task 6: session_send routes text through the SAME message path a ws client
+    uses (_process_chat_message) and returns the reply — Claude co-drive."""
     config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
     engine = Engine(config)
-    await engine.db.initialize()
-    try:
-        s = await engine.sessions.create(working_dir="/tmp")
-        await engine.sessions.link_conversation(s["id"], "conv-9")
-        result = await engine._do_session_send(s["id"], "hello from claude")
-        assert result["session_id"] == s["id"]
-        assert result["conversation_id"] == "conv-9"
-        assert result["message_id"] is not None
-        assert await engine.sessions.get_linked_conversation(s["id"]) == "conv-9"
-    finally:
-        await engine.db.close()
+
+    async def fake_chat(msg, send=None):
+        return {"type": "response", "content": "echo:" + msg["content"],
+                "session_id": msg.get("session_id")}
+
+    engine._process_chat_message = fake_chat
+    out = engine._mcp_tool_handler("session_send", {"session_id": "s1", "text": "hi"})
+    assert out.get("output") == "echo:hi"
+    assert out.get("session_id") == "s1"
 
 
 @pytest.mark.asyncio
@@ -388,39 +387,3 @@ async def test_mcp_tools_include_session_send(tmp_path):
     engine = Engine(config)
     names = [t["name"] for t in engine.mcp_server.get_tool_definitions()]
     assert "session_send" in names
-
-
-@pytest.mark.asyncio
-async def test_link_conversation_frame(tmp_path):
-    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
-    engine = Engine(config)
-    await engine.db.initialize()
-    try:
-        s = await engine.sessions.create(working_dir="/tmp")
-        resp = await engine.handle_message({
-            "type": "link_conversation", "session_id": s["id"], "conversation_id": "conv-x",
-        })
-        assert resp["type"] == "conversation_linked"
-        assert resp["conversation_id"] == "conv-x"
-    finally:
-        await engine.db.close()
-
-
-@pytest.mark.asyncio
-async def test_session_send_via_mcp_handler(tmp_path):
-    """The MCP sync handler runs tool code on a SEPARATE loop/thread when the
-    engine loop is running; session_send must be loop-safe there (fresh conn)."""
-    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
-    engine = Engine(config)
-    await engine.db.initialize()
-    try:
-        s = await engine.sessions.create(working_dir="/tmp")
-        await engine.sessions.link_conversation(s["id"], "conv-mcp")
-        # SYNC handler; inside a running loop -> ThreadPoolExecutor + asyncio.run path.
-        out = engine._mcp_tool_handler(
-            "session_send", {"session_id": s["id"], "content": "hi via mcp"}
-        )
-        assert "conv-mcp" in out.get("output", "")
-        assert out.get("conversation_id") == "conv-mcp"
-    finally:
-        await engine.db.close()

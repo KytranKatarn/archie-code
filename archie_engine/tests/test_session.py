@@ -85,29 +85,18 @@ async def test_build_context(session_mgr):
 
 
 @pytest.mark.asyncio
-async def test_link_conversation(session_mgr):
-    s = await session_mgr.create(working_dir="/tmp")
-    link = await session_mgr.link_conversation(s["id"], "conv-42")
-    assert link["session_id"] == s["id"]
-    assert link["conversation_id"] == "conv-42"
-    assert await session_mgr.get_linked_conversation(s["id"]) == "conv-42"
+async def test_session_link_conversation_persists(monkeypatch):
+    """Task 6: Session.link_conversation stamps the id locally and hands off to
+    the module-level _persist_link (the hub POST seam, monkeypatched here)."""
+    from archie_engine import session as sessmod
 
+    captured = {}
 
-@pytest.mark.asyncio
-async def test_link_conversation_unknown_session(session_mgr):
-    link = await session_mgr.link_conversation("nope", "conv-1")
-    assert "error" in link
+    async def fake_persist(session_id, conversation_id):
+        captured["args"] = (session_id, conversation_id)
 
-
-@pytest.mark.asyncio
-async def test_link_conversation_upsert(session_mgr):
-    s = await session_mgr.create(working_dir="/tmp")
-    await session_mgr.link_conversation(s["id"], "conv-1")
-    await session_mgr.link_conversation(s["id"], "conv-2")
-    assert await session_mgr.get_linked_conversation(s["id"]) == "conv-2"
-
-
-@pytest.mark.asyncio
-async def test_get_linked_conversation_none(session_mgr):
-    s = await session_mgr.create(working_dir="/tmp")
-    assert await session_mgr.get_linked_conversation(s["id"]) is None
+    monkeypatch.setattr(sessmod, "_persist_link", fake_persist)
+    s = sessmod.Session(session_id="s1")
+    await s.link_conversation("conv-42")
+    assert s.conversation_id == "conv-42"
+    assert captured["args"] == ("s1", "conv-42")

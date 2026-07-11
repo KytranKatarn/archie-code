@@ -1,6 +1,10 @@
 import json
+import logging
 import uuid
+
 from archie_engine.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -75,35 +79,45 @@ class SessionManager:
             "history": history,
         }
 
-    async def link_conversation(self, session_id: str, conversation_id: str) -> dict:
-        """Link an engine session to an archie-comms conversation (Task 6).
 
-        Establishes the handle the MCP session_send tool uses to route a message
-        from Claude into the linked conversation. Idempotent — re-linking updates
-        the existing row (one conversation per session). Returns the link record,
-        or {"error": ...} when the session does not exist.
-        """
-        session = await self.get(session_id)
-        if not session:
-            return {"error": f"session not found: {session_id}"}
-        await self._persist_link(session_id, conversation_id)
-        return {"session_id": session_id, "conversation_id": conversation_id}
+async def _persist_link(session_id: str, conversation_id: str) -> None:
+    """Persist a session<->conversation link on the hub (Task 6). NON-FATAL.
 
-    async def _persist_link(self, session_id: str, conversation_id: str) -> None:
-        """Upsert the session<->conversation link row (Task 6)."""
-        await self.db.execute(
-            "INSERT INTO conversation_links (session_id, conversation_id, linked_at) "
-            "VALUES (?, ?, datetime('now')) "
-            "ON CONFLICT(session_id) DO UPDATE SET "
-            "conversation_id = excluded.conversation_id, linked_at = datetime('now')",
-            (session_id, conversation_id),
-        )
-        await self.db.commit()
+    POSTs to {hub}/api/internal/session-link with the engine's INTERNAL_API_KEY.
+    The hub base URL comes from the engine's existing env (ARCHIE_HUB_URL, then
+    ARCHIE_PLATFORM_URL). Any failure is logged and swallowed so the local session
+    keeps working even when the hub is unreachable.
+    """
+    import os
 
-    async def get_linked_conversation(self, session_id: str) -> str | None:
-        """Return the conversation_id linked to a session, or None (Task 6)."""
-        row = await self.db.fetchone(
-            "SELECT conversation_id FROM conversation_links WHERE session_id = ?",
-            (session_id,),
-        )
-        return row["conversation_id"] if row else None
+    import aiohttp
+
+    hub = os.getenv("ARCHIE_HUB_URL") or os.getenv("ARCHIE_PLATFORM_URL") or "http://192.168.1.200:3000"
+    key = os.getenv("INTERNAL_API_KEY", "")
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(
+                f"{hub.rstrip('/')}/api/internal/session-link",
+                json={"session_id": session_id, "conversation_id": conversation_id},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=aiohttp.ClientTimeout(total=4),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("session-link POST -> HTTP %s", resp.status)
+    except Exception as exc:  # non-fatal by design
+        logger.warning("session-link POST failed (non-fatal): %s", exc)
+
+
+class Session:
+    """A live engine session that can be linked to an archie-comms conversation
+    (Task 6). link_conversation stamps the id locally and persists it to the hub
+    via the module-level _persist_link (so tests can monkeypatch that seam)."""
+
+    def __init__(self, session_id: str, working_dir: str = "", conversation_id: str | None = None):
+        self.session_id = session_id
+        self.working_dir = working_dir
+        self.conversation_id = conversation_id
+
+    async def link_conversation(self, conversation_id: str) -> None:
+        self.conversation_id = conversation_id
+        await _persist_link(self.session_id, conversation_id)
