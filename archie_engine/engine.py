@@ -858,19 +858,10 @@ class Engine:
         response_text = result.get("response", "")
         await self.sessions.add_message(session_id, "assistant", response_text)
 
-        # Provenance badge (Task 7): who / where / what served this turn. agent_name
-        # + model_used come from the router contract (platform dispatch fills both;
-        # local inference fills model only, so agent defaults to this engine's
-        # A.R.C.H.I.E.). node is best-effort: the engine's own node for local, or
-        # "hub" for a platform-dispatched turn (the connector does not return the
-        # exact fleet node the DHQ selected).
-        if decision.target.value == "platform":
-            node = "hub"
-        elif self.hub_heartbeat is not None:
-            node = self.hub_heartbeat.node_id
-        else:
-            node = "local"
-
+        # Provenance badge (Task 7 / DispatchResult): copy the dispatch attribution
+        # the reply gives us. agent_name + model_used come from the platform/router
+        # contract; node ONLY when the reply carries it (empty otherwise — we do not
+        # fabricate a node).
         return {
             "type": "response",
             "session_id": session_id,
@@ -878,8 +869,8 @@ class Engine:
             "intent": intent["type"],
             "dispatch_target": decision.target.value,
             "dispatch_reason": decision.reason,  # surfaced inline by archie-tui (#4264 PR 4)
-            "agent": result.get("agent_name") or "A.R.C.H.I.E.",
-            "node": node,
+            "agent": result.get("agent_name") or "",
+            "node": result.get("node") or "",
             "model": result.get("model_used") or "",
             "tool_calls": result.get("tool_calls", []),
         }

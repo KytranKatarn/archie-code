@@ -305,14 +305,15 @@ async def test_process_chat_message_includes_badge_fields(tmp_path):
     engine = Engine(config)
     await engine.db.initialize()
     engine.router.route = AsyncMock(
-        return_value={"response": "answer", "model_used": "test-model"}
+        return_value={"response": "answer", "model_used": "test-model",
+                      "agent_name": "F.O.R.G.E.", "node": "Starship-246"}
     )
     result = await engine._process_chat_message(
         {"type": "message", "content": "What is the Bridge dispatcher?"}
     )
     assert result["type"] == "response"
-    assert result["agent"] == "A.R.C.H.I.E."
-    assert result["node"] == "local"
+    assert result["agent"] == "F.O.R.G.E."
+    assert result["node"] == "Starship-246"
     assert result["model"] == "test-model"
     await engine.db.close()
 

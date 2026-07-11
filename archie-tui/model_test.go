@@ -114,14 +114,14 @@ func TestParseEngineMessageBadge(t *testing.T) {
 	}
 }
 
-func TestChatBadgeFormat(t *testing.T) {
-	if got := chatBadge("F.O.R.G.E.", "hub", "qwen2.5:7b"); got != "\u2b21 F.O.R.G.E. \u00b7 hub \u00b7 qwen2.5:7b" {
+func TestAgentBadge(t *testing.T) {
+	if got := agentBadge("F.O.R.G.E.", "Starship-246", "qwen2.5:7b"); got != "\u27e8F.O.R.G.E. \u00b7 Starship-246 \u00b7 qwen2.5:7b\u27e9" {
 		t.Fatalf("badge format: %q", got)
 	}
-	if got := chatBadge("A.R.C.H.I.E.", "local", ""); got != "\u2b21 A.R.C.H.I.E. \u00b7 local" {
+	if got := agentBadge("A.R.C.H.I.E.", "", "qwen2.5:1.5b"); got != "\u27e8A.R.C.H.I.E. \u00b7 qwen2.5:1.5b\u27e9" {
 		t.Fatalf("badge omit-empty: %q", got)
 	}
-	if got := chatBadge("", "", ""); got != "" {
+	if got := agentBadge("", "", ""); got != "" {
 		t.Fatalf("empty badge must be empty: %q", got)
 	}
 }
