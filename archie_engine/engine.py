@@ -69,6 +69,7 @@ class Engine:
             {"name": "git_diff", "description": "Git diff of changes", "parameters": {}},
             {"name": "shell_exec", "description": "Execute shell command", "parameters": {"command": {"type": "string"}}},
             {"name": "search_knowledge", "description": "Search ARCHIE knowledge base", "parameters": {"query": {"type": "string"}}},
+            {"name": "session_send", "description": "Send a message into an engine session (routed to its linked archie-comms conversation)", "parameters": {"session_id": {"type": "string"}, "content": {"type": "string"}, "role": {"type": "string"}}},
         ])
         # Wire the tool handler so tools/call works (was unregistered — stub bug)
         self.mcp_server.set_tool_handler(self._mcp_tool_handler)
@@ -225,6 +226,14 @@ class Engine:
                 except Exception as e:
                     return {"output": f"shell_exec failed: {e}"}
 
+            elif tool_name == "session_send":
+                sess_id = arguments.get("session_id", "")
+                content = arguments.get("content", "")
+                role = arguments.get("role", "assistant")
+                if not sess_id or not content:
+                    return {"output": "session_send requires session_id and content"}
+                return await self._do_session_send(sess_id, content, role)
+
             return {"output": f"Unknown tool: {tool_name}"}
 
         # Run async code from synchronous context
@@ -238,6 +247,37 @@ class Engine:
             return loop.run_until_complete(_run())
         except Exception as e:
             return {"output": f"Tool handler error: {e}"}
+
+    async def _do_session_send(self, session_id: str, content: str,
+                               role: str = "assistant") -> dict:
+        """Record a message into a session + resolve its linked conversation
+        (Task 6, backs the MCP session_send tool). Opens a FRESH short-lived DB
+        connection so it is safe to call from the MCP handler's separate event
+        loop/thread — aiosqlite binds a connection to its creating loop, so reusing
+        self.db there would raise. archie-comms delivery is out of scope here; this
+        returns the linked conversation_id for that side to consume.
+        """
+        from archie_engine.database import Database
+        from archie_engine.session import SessionManager
+
+        db = Database(self.db.db_path)
+        await db.initialize()
+        try:
+            mgr = SessionManager(db)
+            session = await mgr.get(session_id)
+            if not session:
+                return {"output": f"session not found: {session_id}", "error": "no_session"}
+            message_id = await mgr.add_message(session_id, role, content)
+            conversation_id = await mgr.get_linked_conversation(session_id)
+        finally:
+            await db.close()
+
+        if conversation_id:
+            return {"output": f"queued message {message_id} -> conversation {conversation_id}",
+                    "session_id": session_id, "conversation_id": conversation_id,
+                    "message_id": message_id}
+        return {"output": f"recorded message {message_id} in session {session_id} (no linked conversation)",
+                "session_id": session_id, "message_id": message_id}
 
     def _build_tool_registry(self, workspace: Path | None = None,
                              scope_config: dict | None = None,
@@ -346,6 +386,17 @@ class Engine:
             if session:
                 return {"type": "session_resumed", "session_id": session["id"]}
             return {"type": "error", "error": f"Session not found: {session_id}"}
+
+        if msg_type == "link_conversation":
+            session_id = msg.get("session_id", "")
+            conversation_id = msg.get("conversation_id", "")
+            if not session_id or not conversation_id:
+                return {"type": "error",
+                        "error": "link_conversation requires session_id and conversation_id"}
+            result = await self.sessions.link_conversation(session_id, conversation_id)
+            if "error" in result:
+                return {"type": "error", "error": result["error"]}
+            return {"type": "conversation_linked", **result}
 
         if msg_type == "list_skills":
             return {

@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+CREATE TABLE IF NOT EXISTS conversation_links (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+    conversation_id TEXT NOT NULL,
+    linked_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 INITIAL_VERSION = 1
@@ -47,6 +52,11 @@ class Database:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+
+    @property
+    def db_path(self) -> Path:
+        """The sqlite file path — used to open a fresh, loop-local connection."""
+        return self._db_path
 
     async def initialize(self) -> None:
         """Open connection, run schema, seed version, set row_factory."""
