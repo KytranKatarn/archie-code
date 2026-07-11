@@ -69,10 +69,16 @@ class Engine:
             {"name": "git_diff", "description": "Git diff of changes", "parameters": {}},
             {"name": "shell_exec", "description": "Execute shell command", "parameters": {"command": {"type": "string"}}},
             {"name": "search_knowledge", "description": "Search ARCHIE knowledge base", "parameters": {"query": {"type": "string"}}},
-            {"name": "session_send", "description": "Send a message into an engine session (routed to its linked archie-comms conversation)", "parameters": {"session_id": {"type": "string"}, "content": {"type": "string"}, "role": {"type": "string"}}},
+            {"name": "session_send", "description": "Send a message into a live engine session and get the reply (Claude co-drive)", "parameters": {"session_id": {"type": "string"}, "text": {"type": "string"}}},
         ])
         # Wire the tool handler so tools/call works (was unregistered — stub bug)
         self.mcp_server.set_tool_handler(self._mcp_tool_handler)
+
+        # Approval-gated edits (Task 5): apply_edit stashes here until an approval
+        # frame resolves it (keyed by session_id). The approval window fails CLOSED —
+        # a lapsed/never-arriving approval NEVER writes.
+        self._pending_edits: dict = {}
+        self._approval_timeout_s: float = 300.0
 
         # Hub connectivity (optional) — must be set up BEFORE router so hub_connector is available
         self.hub_connector: HubConnector | None = None
@@ -228,11 +234,15 @@ class Engine:
 
             elif tool_name == "session_send":
                 sess_id = arguments.get("session_id", "")
-                content = arguments.get("content", "")
-                role = arguments.get("role", "assistant")
-                if not sess_id or not content:
-                    return {"output": "session_send requires session_id and content"}
-                return await self._do_session_send(sess_id, content, role)
+                text = arguments.get("text", "")
+                if not sess_id or not text:
+                    return {"output": "session_send requires session_id and text"}
+                # Route through the SAME message path a ws client uses so Claude can
+                # co-drive a live session; return the final response dict.
+                reply = await self._process_chat_message(
+                    {"type": "message", "content": text, "session_id": sess_id}
+                )
+                return {"output": reply.get("content", ""), **reply}
 
             return {"output": f"Unknown tool: {tool_name}"}
 
@@ -247,37 +257,6 @@ class Engine:
             return loop.run_until_complete(_run())
         except Exception as e:
             return {"output": f"Tool handler error: {e}"}
-
-    async def _do_session_send(self, session_id: str, content: str,
-                               role: str = "assistant") -> dict:
-        """Record a message into a session + resolve its linked conversation
-        (Task 6, backs the MCP session_send tool). Opens a FRESH short-lived DB
-        connection so it is safe to call from the MCP handler's separate event
-        loop/thread — aiosqlite binds a connection to its creating loop, so reusing
-        self.db there would raise. archie-comms delivery is out of scope here; this
-        returns the linked conversation_id for that side to consume.
-        """
-        from archie_engine.database import Database
-        from archie_engine.session import SessionManager
-
-        db = Database(self.db.db_path)
-        await db.initialize()
-        try:
-            mgr = SessionManager(db)
-            session = await mgr.get(session_id)
-            if not session:
-                return {"output": f"session not found: {session_id}", "error": "no_session"}
-            message_id = await mgr.add_message(session_id, role, content)
-            conversation_id = await mgr.get_linked_conversation(session_id)
-        finally:
-            await db.close()
-
-        if conversation_id:
-            return {"output": f"queued message {message_id} -> conversation {conversation_id}",
-                    "session_id": session_id, "conversation_id": conversation_id,
-                    "message_id": message_id}
-        return {"output": f"recorded message {message_id} in session {session_id} (no linked conversation)",
-                "session_id": session_id, "message_id": message_id}
 
     def _build_tool_registry(self, workspace: Path | None = None,
                              scope_config: dict | None = None,
@@ -387,17 +366,6 @@ class Engine:
                 return {"type": "session_resumed", "session_id": session["id"]}
             return {"type": "error", "error": f"Session not found: {session_id}"}
 
-        if msg_type == "link_conversation":
-            session_id = msg.get("session_id", "")
-            conversation_id = msg.get("conversation_id", "")
-            if not session_id or not conversation_id:
-                return {"type": "error",
-                        "error": "link_conversation requires session_id and conversation_id"}
-            result = await self.sessions.link_conversation(session_id, conversation_id)
-            if "error" in result:
-                return {"type": "error", "error": result["error"]}
-            return {"type": "conversation_linked", **result}
-
         if msg_type == "list_skills":
             return {
                 "type": "skills_list",
@@ -455,9 +423,10 @@ class Engine:
             return {"type": "git_diff", **git_diff(msg.get("root"), msg.get("path"))}
 
         if msg_type == "apply_edit":
-            from archie_engine.workspace_ops import write_file
+            return await self._handle_apply_edit(msg, send=send)
 
-            return {"type": "apply_result", **write_file(msg.get("root"), msg.get("path", ""), msg.get("content", ""))}
+        if msg_type == "approval":
+            return await self._handle_approval(msg)
 
         return {"type": "error", "error": f"Unknown message type: {msg_type}"}
 
@@ -748,6 +717,69 @@ class Engine:
         result["file_path"] = fp
         return result
 
+    async def _handle_apply_edit(self, msg: dict, send=None) -> dict:
+        """Approval-gated write (Task 5): stash the edit + emit an approval_request;
+        the file is written ONLY after the client returns an `approval` frame. Lets a
+        human vet an agent-initiated edit (diff shown) before it touches disk. No
+        deadlock — the approval arrives as a separate frame and is correlated here.
+        """
+        import difflib
+
+        from archie_engine.workspace_ops import read_file
+
+        root = msg.get("root")
+        path = msg.get("path", "")
+        content = msg.get("content", "")
+        session_id = msg.get("session_id") or ""
+
+        try:
+            cur = read_file(root, path)
+            old = cur.get("content", "") if isinstance(cur, dict) else ""
+        except Exception:
+            old = ""
+        diff = "".join(difflib.unified_diff(
+            old.splitlines(keepends=True), content.splitlines(keepends=True),
+            fromfile=path, tofile=path,
+        ))
+
+        import time
+
+        now = time.monotonic()
+        # Prune any edits whose approval window already lapsed (fail-closed cleanup).
+        self._pending_edits = {
+            k: v for k, v in self._pending_edits.items()
+            if v.get("deadline", float("inf")) > now
+        }
+        self._pending_edits[session_id] = {
+            "root": root, "path": path, "content": content,
+            "deadline": now + self._approval_timeout_s,
+        }
+        return {"type": "approval_request", "session_id": session_id,
+                "kind": "apply_edit", "path": path, "diff": diff}
+
+    async def _handle_approval(self, msg: dict) -> dict:
+        """Resolve a pending approval_request (Task 5): approved=true performs the
+        stashed write and returns apply_result; false discards it (apply_cancelled)."""
+        from archie_engine.workspace_ops import write_file
+
+        session_id = msg.get("session_id") or ""
+        approved = bool(msg.get("approved"))
+        pending = self._pending_edits.pop(session_id, None)
+        if pending is None and self._pending_edits:
+            # No session supplied → resolve the single outstanding edit.
+            _k, pending = self._pending_edits.popitem()
+        if not pending:
+            return {"type": "error", "error": "no pending edit to approve"}
+        import time
+
+        expired = time.monotonic() > pending.get("deadline", float("inf"))
+        if not approved or expired:
+            # Fail closed: a decline OR a lapsed approval window NEVER writes.
+            reason = "timeout" if (expired and approved) else "declined"
+            return {"type": "apply_cancelled", "path": pending["path"], "reason": reason}
+        return {"type": "apply_result",
+                **write_file(pending["root"], pending["path"], pending["content"])}
+
     async def _handle_build(self, msg: dict, send=None) -> dict:
         """Drive one coordinate->build->test->PR cycle from a ws client (Task 5).
 
@@ -775,7 +807,9 @@ class Engine:
             module=msg.get("module"),
             progress=_prog,
         )
-        return {"type": "build_result", **result}
+        # The build loop NEVER merges — it opens a PR for review and refuses
+        # protected branches. Stamp merged:false on the terminal frame explicitly.
+        return {"type": "build_result", "merged": False, **result}
 
     async def _process_chat_message(self, msg: dict, send=None) -> dict:
         content = msg.get("content", "")
@@ -858,19 +892,10 @@ class Engine:
         response_text = result.get("response", "")
         await self.sessions.add_message(session_id, "assistant", response_text)
 
-        # Provenance badge (Task 7): who / where / what served this turn. agent_name
-        # + model_used come from the router contract (platform dispatch fills both;
-        # local inference fills model only, so agent defaults to this engine's
-        # A.R.C.H.I.E.). node is best-effort: the engine's own node for local, or
-        # "hub" for a platform-dispatched turn (the connector does not return the
-        # exact fleet node the DHQ selected).
-        if decision.target.value == "platform":
-            node = "hub"
-        elif self.hub_heartbeat is not None:
-            node = self.hub_heartbeat.node_id
-        else:
-            node = "local"
-
+        # Provenance badge (Task 7 / DispatchResult): copy the dispatch attribution
+        # the reply gives us. agent_name + model_used come from the platform/router
+        # contract; node ONLY when the reply carries it (empty otherwise — we do not
+        # fabricate a node).
         return {
             "type": "response",
             "session_id": session_id,
@@ -878,8 +903,8 @@ class Engine:
             "intent": intent["type"],
             "dispatch_target": decision.target.value,
             "dispatch_reason": decision.reason,  # surfaced inline by archie-tui (#4264 PR 4)
-            "agent": result.get("agent_name") or "A.R.C.H.I.E.",
-            "node": node,
+            "agent": result.get("agent_name") or "",
+            "node": result.get("node") or "",
             "model": result.get("model_used") or "",
             "tool_calls": result.get("tool_calls", []),
         }

@@ -16,9 +16,8 @@ import (
 // pendingEdit is an edit staged by the editor (Ctrl+S) awaiting operator approval
 // before it is sent as an apply_edit (Task 5).
 type pendingEdit struct {
-	root    string
-	path    string
-	content string
+	sessionID string
+	path      string
 }
 
 type model struct {
@@ -27,6 +26,7 @@ type model struct {
 	statusBar    *views.StatusBar
 	skillPicker  *views.SkillPicker
 	toolPalette  *views.ToolPalette
+	palette      *Palette
 	companion    *views.CompanionView
 	statusPanel  *views.StatusPanel
 	explorer     *views.FileExplorer
@@ -60,6 +60,7 @@ func initialModel(wsURL string) model {
 		statusBar:   views.NewStatusBar(),
 		skillPicker: views.NewSkillPicker(),
 		toolPalette: views.NewToolPalette(),
+		palette:     NewPalette(nil),
 		companion:   views.NewCompanionView(),
 		statusPanel: views.NewStatusPanel(),
 		explorer:    views.NewFileExplorer(),
@@ -159,6 +160,7 @@ func parseEngineMessage(raw map[string]interface{}) EngineResponseMsg {
 		Diff:       getString(raw, "diff"),
 		ApplyBytes: getInt(raw, "bytes"),
 		ApplyError: getString(raw, "error"),
+		Kind:       getString(raw, "kind"),
 	}
 
 	// repo_list: repos: [{name, path, label}]
@@ -250,10 +252,11 @@ func getStringSlice(m map[string]interface{}, key string) []string {
 	return out
 }
 
-// chatBadge formats the per-response provenance badge (Task 7): who (agent) /
-// where (node) / what (model) served the turn. Empty parts are omitted; an
-// all-empty badge yields "" so the caller can skip rendering it.
-func chatBadge(agent, node, model string) string {
+// agentBadge formats the per-response provenance badge (Task 7 / DispatchResult):
+// who (agent) / where (node) / what (model) served the turn, joined with " \u00b7 "
+// and wrapped in \u27e8\u27e9. Empty parts are omitted; an all-empty badge yields ""
+// so the caller can skip rendering it.
+func agentBadge(agent, node, model string) string {
 	parts := make([]string, 0, 3)
 	for _, p := range []string{agent, node, model} {
 		if p != "" {
@@ -263,7 +266,7 @@ func chatBadge(agent, node, model string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "\u2b21 " + strings.Join(parts, " \u00b7 ")
+	return "\u27e8" + strings.Join(parts, " \u00b7 ") + "\u27e9"
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -273,15 +276,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.editing {
 			switch msg.String() {
 			case "ctrl+s":
-				// Approval gate (Task 5): stage the edit for confirmation instead of
-				// applying immediately. Defensive: never stage a buffer from a truncated
-				// read (entry is already blocked in the "e" handler).
+				// Send the edit to the engine, which gates it behind an approval_request
+				// (Task 5) — we never write client-side. Never send a buffer from a
+				// truncated read (also blocked in the "e" handler).
 				if m.connected && m.explorer.OpenPath != "" && !m.explorer.OpenTruncated {
-					m.pendingApply = &pendingEdit{
-						root:    m.explorer.CurrentRepo,
-						path:    m.explorer.OpenPath,
-						content: m.editor.Value(),
-					}
+					_ = m.client.Send(map[string]interface{}{
+						"type":       "apply_edit",
+						"session_id": m.sessionID,
+						"root":       m.explorer.CurrentRepo,
+						"path":       m.explorer.OpenPath,
+						"content":    m.editor.Value(),
+					})
 				}
 				m.editing = false
 				m.editor.Blur()
@@ -295,24 +300,61 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editor, ecmd = m.editor.Update(msg)
 			return m, ecmd
 		}
-		// Apply-edit approval gate (Task 5): a staged edit awaits y/n before send.
+		// Apply-edit approval (Task 5): the engine emitted an approval_request;
+		// the operator vets it with y/n. The send status is surfaced so a
+		// disconnected/failed decision is never silently dropped (F.O.R.G.E.).
 		if m.pendingApply != nil {
 			switch msg.String() {
 			case "y", "Y", "enter":
-				pe := m.pendingApply
-				if m.connected {
-					_ = m.client.Send(map[string]interface{}{
-						"type": "apply_edit", "root": pe.root, "path": pe.path, "content": pe.content,
-					})
-				}
+				m.sendApproval(true)
 				m.pendingApply = nil
 				return m, nil
 			case "n", "N", "esc":
-				m.chat.AddMessage("system", "apply cancelled")
+				m.sendApproval(false)
 				m.pendingApply = nil
 				return m, nil
 			}
 			return m, nil
+		}
+		// Command palette (Task 5): while open, keys filter/navigate/run.
+		if m.palette.Open {
+			switch msg.String() {
+			case "esc":
+				m.palette.Open = false
+				return m, nil
+			case "up":
+				if m.palette.Selected > 0 {
+					m.palette.Selected--
+				}
+				return m, nil
+			case "down":
+				if m.palette.Selected < len(m.palette.Visible())-1 {
+					m.palette.Selected++
+				}
+				return m, nil
+			case "enter":
+				vis := m.palette.Visible()
+				if m.palette.Selected < len(vis) {
+					cmd := vis[m.palette.Selected]
+					m.palette.Open = false
+					if m.connected {
+						m.chat.AddMessage("user", "/"+cmd)
+						_ = m.client.SendMessage("/"+cmd, m.sessionID)
+					}
+				}
+				return m, nil
+			case "backspace":
+				f := m.palette.Filter()
+				if len(f) > 0 {
+					m.palette.SetFilter(f[:len(f)-1])
+				}
+				return m, nil
+			default:
+				if len(msg.String()) == 1 {
+					m.palette.SetFilter(m.palette.Filter() + msg.String())
+				}
+				return m, nil
+			}
 		}
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
@@ -385,6 +427,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "/":
+			if m.input.Value() == "" && !m.explorer.Visible && !m.skillPicker.Visible && m.pendingApply == nil {
+				m.palette.Open = true
+				m.palette.SetFilter("")
+				return m, nil
+			}
 		case "ctrl+t":
 			m.toolPalette.Visible = !m.toolPalette.Visible
 			if m.toolPalette.Visible {
@@ -553,7 +601,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat.AddMessage("system", meta)
 			}
 			// Provenance badge (Task 7): agent / node / model that served the turn.
-			if badge := chatBadge(msg.Agent, msg.Node, msg.Model); badge != "" {
+			if badge := agentBadge(msg.Agent, msg.Node, msg.Model); badge != "" {
 				m.chat.AddMessage("system", badge)
 			}
 		case "session_created":
@@ -566,6 +614,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				items = append(items, views.SkillItem{Name: s.Name, Description: s.Description})
 			}
 			m.skillPicker.Skills = items
+			cmds := make([]string, 0, len(msg.Skills))
+			for _, s := range msg.Skills {
+				cmds = append(cmds, s.Name)
+			}
+			m.palette.SetCommands(cmds)
 		case "tools_list":
 			var titems []views.ToolItem
 			for _, tl := range msg.Tools {
@@ -621,6 +674,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					_ = m.client.Send(map[string]interface{}{"type": "git_diff", "root": m.explorer.CurrentRepo, "path": m.explorer.OpenPath})
 				}
 			}
+		case "approval_request":
+			// Engine wants to write (Task 5): stage a pending approval; the y/n
+			// handler + the View banner drive the operator's decision.
+			m.pendingApply = &pendingEdit{sessionID: msg.SessionID, path: msg.FilePath}
+			m.chat.AddMessage("system", "Approve write to "+msg.FilePath+"?  [y] apply  [n] decline")
+		case "apply_cancelled":
+			m.chat.AddMessage("system", "apply declined: "+msg.FilePath)
 		case "error":
 			// Engine error frames carry the message under "error" (parsed into
 			// ApplyError); fall back to Content for any legacy shape.
@@ -701,6 +761,28 @@ func (m model) explorerEnter() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// sendApproval delivers the operator's decision on a staged apply_edit and reports
+// whether it actually reached the engine. A disconnected or failed send is surfaced
+// (not silently dropped) so the operator knows the engine will DENY BY TIMEOUT
+// rather than assuming their keypress landed (F.O.R.G.E. review on #34).
+func (m model) sendApproval(approved bool) {
+	verb := "approved"
+	if !approved {
+		verb = "denied"
+	}
+	if !m.connected {
+		m.chat.AddMessage("system", "approval not delivered (disconnected) \u2014 engine will deny by timeout")
+		return
+	}
+	if err := m.client.Send(map[string]interface{}{
+		"type": "approval", "session_id": m.pendingApply.sessionID, "approved": approved,
+	}); err != nil {
+		m.chat.AddMessage("system", "approval not delivered (send failed) \u2014 engine will deny by timeout")
+		return
+	}
+	m.chat.AddMessage("system", "approval sent: "+verb)
+}
+
 func (m model) View() string {
 	if m.width == 0 {
 		return "Loading..."
@@ -744,6 +826,12 @@ func (m model) View() string {
 		toolSection = m.toolPalette.Render()
 	}
 
+	// Command palette overlay (Task 5)
+	var paletteSection string
+	if m.palette.Open {
+		paletteSection = m.palette.Render(m.width)
+	}
+
 	// Input area
 	inputLine := lipgloss.NewStyle().Padding(0, 1).Render(m.input.View())
 
@@ -772,9 +860,12 @@ func (m model) View() string {
 	if toolSection != "" {
 		sections = append(sections, toolSection)
 	}
+	if paletteSection != "" {
+		sections = append(sections, paletteSection)
+	}
 	if m.pendingApply != nil {
 		confirm := lipgloss.NewStyle().Foreground(lipgloss.Color("#fbbf24")).Bold(true).
-			Render("Apply changes to " + m.pendingApply.path + "?  [y] apply   [n] cancel")
+			Render("Approve write to " + m.pendingApply.path + "?  [y] apply   [n] decline")
 		sections = append(sections, confirm)
 	}
 	if explorerSection := m.explorer.Render(); explorerSection != "" {

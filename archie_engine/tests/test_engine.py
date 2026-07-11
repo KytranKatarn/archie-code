@@ -305,14 +305,15 @@ async def test_process_chat_message_includes_badge_fields(tmp_path):
     engine = Engine(config)
     await engine.db.initialize()
     engine.router.route = AsyncMock(
-        return_value={"response": "answer", "model_used": "test-model"}
+        return_value={"response": "answer", "model_used": "test-model",
+                      "agent_name": "F.O.R.G.E.", "node": "Starship-246"}
     )
     result = await engine._process_chat_message(
         {"type": "message", "content": "What is the Bridge dispatcher?"}
     )
     assert result["type"] == "response"
-    assert result["agent"] == "A.R.C.H.I.E."
-    assert result["node"] == "local"
+    assert result["agent"] == "F.O.R.G.E."
+    assert result["node"] == "Starship-246"
     assert result["model"] == "test-model"
     await engine.db.close()
 
@@ -358,27 +359,75 @@ async def test_build_frame_streams_progress_and_returns_result(tmp_path):
         resp = await engine.handle_message({"type": "build", "task": "add X"}, send=capture)
         assert resp["type"] == "build_result"
         assert resp["success"] is True and resp["pr_url"] == "https://gh/pr/1"
+        assert resp["merged"] is False
         assert any(f.get("type") == "progress" and f.get("stage") == "test" for f in frames)
     finally:
         await engine.db.close()
 
 
 @pytest.mark.asyncio
-async def test_session_send_records_and_resolves_link(tmp_path):
-    """Task 6: session_send records a message and returns the linked conversation."""
+async def test_session_send_routes_through_message_path(tmp_path):
+    """Task 6: session_send routes text through the SAME message path a ws client
+    uses (_process_chat_message) and returns the reply — Claude co-drive."""
     config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
     engine = Engine(config)
-    await engine.db.initialize()
-    try:
-        s = await engine.sessions.create(working_dir="/tmp")
-        await engine.sessions.link_conversation(s["id"], "conv-9")
-        result = await engine._do_session_send(s["id"], "hello from claude")
-        assert result["session_id"] == s["id"]
-        assert result["conversation_id"] == "conv-9"
-        assert result["message_id"] is not None
-        assert await engine.sessions.get_linked_conversation(s["id"]) == "conv-9"
-    finally:
-        await engine.db.close()
+
+    async def fake_chat(msg, send=None):
+        return {"type": "response", "content": "echo:" + msg["content"],
+                "session_id": msg.get("session_id")}
+
+    engine._process_chat_message = fake_chat
+    out = engine._mcp_tool_handler("session_send", {"session_id": "s1", "text": "hi"})
+    assert out.get("output") == "echo:hi"
+    assert out.get("session_id") == "s1"
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_requires_approval(tmp_path):
+    """Task 5: apply_edit stashes the write + emits approval_request; the file is
+    written only after an approval frame with approved=true."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    target = tmp_path / "f.txt"
+
+    req = await engine.handle_message({
+        "type": "apply_edit", "session_id": "s1",
+        "root": str(tmp_path), "path": "f.txt", "content": "hello\n",
+    })
+    assert req["type"] == "approval_request"
+    assert req["kind"] == "apply_edit" and req["path"] == "f.txt"
+    assert not target.exists()  # nothing written yet
+
+    den = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": False})
+    assert den["type"] == "apply_cancelled"
+    assert not target.exists()
+
+    await engine.handle_message({
+        "type": "apply_edit", "session_id": "s1",
+        "root": str(tmp_path), "path": "f.txt", "content": "hello\n",
+    })
+    res = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": True})
+    assert res["type"] == "apply_result"
+    assert target.read_text() == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_approval_fails_closed_on_timeout(tmp_path):
+    """Task 5: a lapsed approval window fails CLOSED — even approved=true does not
+    write once the deadline has passed."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    engine._approval_timeout_s = 0.0  # any later approval is already past deadline
+    target = tmp_path / "f.txt"
+
+    await engine.handle_message({
+        "type": "apply_edit", "session_id": "s1",
+        "root": str(tmp_path), "path": "f.txt", "content": "x\n",
+    })
+    res = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": True})
+    assert res["type"] == "apply_cancelled"
+    assert res.get("reason") == "timeout"
+    assert not target.exists()
 
 
 @pytest.mark.asyncio
@@ -387,39 +436,3 @@ async def test_mcp_tools_include_session_send(tmp_path):
     engine = Engine(config)
     names = [t["name"] for t in engine.mcp_server.get_tool_definitions()]
     assert "session_send" in names
-
-
-@pytest.mark.asyncio
-async def test_link_conversation_frame(tmp_path):
-    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
-    engine = Engine(config)
-    await engine.db.initialize()
-    try:
-        s = await engine.sessions.create(working_dir="/tmp")
-        resp = await engine.handle_message({
-            "type": "link_conversation", "session_id": s["id"], "conversation_id": "conv-x",
-        })
-        assert resp["type"] == "conversation_linked"
-        assert resp["conversation_id"] == "conv-x"
-    finally:
-        await engine.db.close()
-
-
-@pytest.mark.asyncio
-async def test_session_send_via_mcp_handler(tmp_path):
-    """The MCP sync handler runs tool code on a SEPARATE loop/thread when the
-    engine loop is running; session_send must be loop-safe there (fresh conn)."""
-    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
-    engine = Engine(config)
-    await engine.db.initialize()
-    try:
-        s = await engine.sessions.create(working_dir="/tmp")
-        await engine.sessions.link_conversation(s["id"], "conv-mcp")
-        # SYNC handler; inside a running loop -> ThreadPoolExecutor + asyncio.run path.
-        out = engine._mcp_tool_handler(
-            "session_send", {"session_id": s["id"], "content": "hi via mcp"}
-        )
-        assert "conv-mcp" in out.get("output", "")
-        assert out.get("conversation_id") == "conv-mcp"
-    finally:
-        await engine.db.close()

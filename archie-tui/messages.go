@@ -43,6 +43,8 @@ type EngineResponseMsg struct {
 	Diff       string `json:"diff"`
 	ApplyBytes int    `json:"bytes"`
 	ApplyError string `json:"error"`
+	// approval_request (Task 5): kind + path(FilePath) + diff; SessionID reused.
+	Kind string `json:"kind"`
 }
 
 type Skill struct {

@@ -203,6 +203,7 @@ class CommandRouter:
             "tool_calls": [],
             "model_used": model_used,
             "agent_name": agent_name,
+            "node": resp.get("node", ""),
         }
 
     # ------------------------------------------------------------------

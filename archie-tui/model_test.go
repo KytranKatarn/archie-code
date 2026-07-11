@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -114,14 +115,14 @@ func TestParseEngineMessageBadge(t *testing.T) {
 	}
 }
 
-func TestChatBadgeFormat(t *testing.T) {
-	if got := chatBadge("F.O.R.G.E.", "hub", "qwen2.5:7b"); got != "\u2b21 F.O.R.G.E. \u00b7 hub \u00b7 qwen2.5:7b" {
+func TestAgentBadge(t *testing.T) {
+	if got := agentBadge("F.O.R.G.E.", "Starship-246", "qwen2.5:7b"); got != "\u27e8F.O.R.G.E. \u00b7 Starship-246 \u00b7 qwen2.5:7b\u27e9" {
 		t.Fatalf("badge format: %q", got)
 	}
-	if got := chatBadge("A.R.C.H.I.E.", "local", ""); got != "\u2b21 A.R.C.H.I.E. \u00b7 local" {
+	if got := agentBadge("A.R.C.H.I.E.", "", "qwen2.5:1.5b"); got != "\u27e8A.R.C.H.I.E. \u00b7 qwen2.5:1.5b\u27e9" {
 		t.Fatalf("badge omit-empty: %q", got)
 	}
-	if got := chatBadge("", "", ""); got != "" {
+	if got := agentBadge("", "", ""); got != "" {
 		t.Fatalf("empty badge must be empty: %q", got)
 	}
 }
@@ -157,30 +158,41 @@ func TestParseEngineMessageBuildResult(t *testing.T) {
 	}
 }
 
-func TestApplyEditRequiresApproval(t *testing.T) {
-	// Task 5 (apply_edit approval): Ctrl+S stages the edit for confirmation and
-	// does NOT send it until approved; 'n' cancels.
+func TestApprovalKeypressReportsDeliveryStatus(t *testing.T) {
+	// F.O.R.G.E. (#34): a disconnected operator pressing Y/N must be TOLD the
+	// approval was not delivered (engine denies by timeout), not silently dropped.
 	m := initialModel("ws://x")
-	m.connected = true
-	m.explorer.CurrentRepo = "/repo"
-	m.explorer.OpenPath = "a.go"
-	m.editing = true
-	m.editor.SetValue("new content")
-
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	nm, _ := m.Update(EngineResponseMsg{Type: "approval_request", SessionID: "s1", FilePath: "a.go", Kind: "apply_edit"})
 	mm := nm.(model)
-	if mm.editing {
-		t.Fatal("Ctrl+S should exit edit mode")
-	}
-	if mm.pendingApply == nil {
-		t.Fatal("Ctrl+S must stage a pending apply for approval, not send immediately")
-	}
-	if mm.pendingApply.path != "a.go" || mm.pendingApply.content != "new content" {
-		t.Fatalf("pending apply wrong: %+v", mm.pendingApply)
-	}
+	mm.connected = false
 
+	nm2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m3 := nm2.(model)
+	if m3.pendingApply != nil {
+		t.Fatal("keypress must clear the pending approval")
+	}
+	var found bool
+	for _, msg := range m3.chat.Messages {
+		if strings.Contains(msg.Content, "not delivered") && strings.Contains(msg.Content, "disconnected") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("disconnected approval must surface a not-delivered status; messages=%v", m3.chat.Messages)
+	}
+}
+
+func TestApplyEditApprovalFlow(t *testing.T) {
+	// Task 5 (engine-side gate): an approval_request from the engine stages a
+	// pending approval in the TUI; 'n' declines and clears it.
+	m := initialModel("ws://x")
+	nm, _ := m.Update(EngineResponseMsg{Type: "approval_request", SessionID: "s1", FilePath: "a.go", Kind: "apply_edit"})
+	mm := nm.(model)
+	if mm.pendingApply == nil || mm.pendingApply.sessionID != "s1" || mm.pendingApply.path != "a.go" {
+		t.Fatalf("approval_request must stage a pending approval, got %+v", mm.pendingApply)
+	}
 	nm2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if nm2.(model).pendingApply != nil {
-		t.Fatal("'n' must cancel/clear the pending apply")
+		t.Fatal("'n' must clear the pending approval")
 	}
 }
