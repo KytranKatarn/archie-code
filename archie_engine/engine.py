@@ -74,6 +74,10 @@ class Engine:
         # Wire the tool handler so tools/call works (was unregistered — stub bug)
         self.mcp_server.set_tool_handler(self._mcp_tool_handler)
 
+        # Approval-gated edits (Task 5): apply_edit stashes here until an approval
+        # frame resolves it (keyed by session_id).
+        self._pending_edits: dict = {}
+
         # Hub connectivity (optional) — must be set up BEFORE router so hub_connector is available
         self.hub_connector: HubConnector | None = None
         self.hub_heartbeat: Heartbeat | None = None
@@ -417,9 +421,10 @@ class Engine:
             return {"type": "git_diff", **git_diff(msg.get("root"), msg.get("path"))}
 
         if msg_type == "apply_edit":
-            from archie_engine.workspace_ops import write_file
+            return await self._handle_apply_edit(msg, send=send)
 
-            return {"type": "apply_result", **write_file(msg.get("root"), msg.get("path", ""), msg.get("content", ""))}
+        if msg_type == "approval":
+            return await self._handle_approval(msg)
 
         return {"type": "error", "error": f"Unknown message type: {msg_type}"}
 
@@ -710,6 +715,53 @@ class Engine:
         result["file_path"] = fp
         return result
 
+    async def _handle_apply_edit(self, msg: dict, send=None) -> dict:
+        """Approval-gated write (Task 5): stash the edit + emit an approval_request;
+        the file is written ONLY after the client returns an `approval` frame. Lets a
+        human vet an agent-initiated edit (diff shown) before it touches disk. No
+        deadlock — the approval arrives as a separate frame and is correlated here.
+        """
+        import difflib
+
+        from archie_engine.workspace_ops import read_file
+
+        root = msg.get("root")
+        path = msg.get("path", "")
+        content = msg.get("content", "")
+        session_id = msg.get("session_id") or ""
+
+        try:
+            cur = read_file(root, path)
+            old = cur.get("content", "") if isinstance(cur, dict) else ""
+        except Exception:
+            old = ""
+        diff = "".join(difflib.unified_diff(
+            old.splitlines(keepends=True), content.splitlines(keepends=True),
+            fromfile=path, tofile=path,
+        ))
+
+        self._pending_edits[session_id] = {"root": root, "path": path, "content": content}
+        return {"type": "approval_request", "session_id": session_id,
+                "kind": "apply_edit", "path": path, "diff": diff}
+
+    async def _handle_approval(self, msg: dict) -> dict:
+        """Resolve a pending approval_request (Task 5): approved=true performs the
+        stashed write and returns apply_result; false discards it (apply_cancelled)."""
+        from archie_engine.workspace_ops import write_file
+
+        session_id = msg.get("session_id") or ""
+        approved = bool(msg.get("approved"))
+        pending = self._pending_edits.pop(session_id, None)
+        if pending is None and self._pending_edits:
+            # No session supplied → resolve the single outstanding edit.
+            _k, pending = self._pending_edits.popitem()
+        if not pending:
+            return {"type": "error", "error": "no pending edit to approve"}
+        if not approved:
+            return {"type": "apply_cancelled", "path": pending["path"]}
+        return {"type": "apply_result",
+                **write_file(pending["root"], pending["path"], pending["content"])}
+
     async def _handle_build(self, msg: dict, send=None) -> dict:
         """Drive one coordinate->build->test->PR cycle from a ws client (Task 5).
 
@@ -737,7 +789,9 @@ class Engine:
             module=msg.get("module"),
             progress=_prog,
         )
-        return {"type": "build_result", **result}
+        # The build loop NEVER merges — it opens a PR for review and refuses
+        # protected branches. Stamp merged:false on the terminal frame explicitly.
+        return {"type": "build_result", "merged": False, **result}
 
     async def _process_chat_message(self, msg: dict, send=None) -> dict:
         content = msg.get("content", "")

@@ -174,17 +174,20 @@ class BuildLoop:
         if not tr.success:
             return self._done(result.fail("test", (tr.error or tr.output or "tests failed")[:500]), start)
 
-        await _emit("pr", "opening PR")
         # 5. deploy = open a PR (NEVER merge)
+        await _emit("stage", "git add")
         ga = await self.tools.execute("git_ops", operation="add", paths=applied)
         if not ga.success:
             return self._done(result.fail("stage", ga.error), start)
+        await _emit("commit", "")
         gc = await self.tools.execute("git_ops", operation="commit", message=_commit_message(task))
         if not gc.success:
             return self._done(result.fail("commit", gc.error), start)
+        await _emit("push", branch)
         gp = await self.tools.execute("git_ops", operation="push")  # refuses protected branches by construction
         if not gp.success:
             return self._done(result.fail("push", gp.error), start)
+        await _emit("pr", "opening PR")
         pr = await self.tools.execute("github_ops", operation="pr_create",
                                       title=_pr_title(task),
                                       body=_pr_body(task, applied),

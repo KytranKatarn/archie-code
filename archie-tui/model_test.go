@@ -157,30 +157,17 @@ func TestParseEngineMessageBuildResult(t *testing.T) {
 	}
 }
 
-func TestApplyEditRequiresApproval(t *testing.T) {
-	// Task 5 (apply_edit approval): Ctrl+S stages the edit for confirmation and
-	// does NOT send it until approved; 'n' cancels.
+func TestApplyEditApprovalFlow(t *testing.T) {
+	// Task 5 (engine-side gate): an approval_request from the engine stages a
+	// pending approval in the TUI; 'n' declines and clears it.
 	m := initialModel("ws://x")
-	m.connected = true
-	m.explorer.CurrentRepo = "/repo"
-	m.explorer.OpenPath = "a.go"
-	m.editing = true
-	m.editor.SetValue("new content")
-
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	nm, _ := m.Update(EngineResponseMsg{Type: "approval_request", SessionID: "s1", FilePath: "a.go", Kind: "apply_edit"})
 	mm := nm.(model)
-	if mm.editing {
-		t.Fatal("Ctrl+S should exit edit mode")
+	if mm.pendingApply == nil || mm.pendingApply.sessionID != "s1" || mm.pendingApply.path != "a.go" {
+		t.Fatalf("approval_request must stage a pending approval, got %+v", mm.pendingApply)
 	}
-	if mm.pendingApply == nil {
-		t.Fatal("Ctrl+S must stage a pending apply for approval, not send immediately")
-	}
-	if mm.pendingApply.path != "a.go" || mm.pendingApply.content != "new content" {
-		t.Fatalf("pending apply wrong: %+v", mm.pendingApply)
-	}
-
 	nm2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if nm2.(model).pendingApply != nil {
-		t.Fatal("'n' must cancel/clear the pending apply")
+		t.Fatal("'n' must clear the pending approval")
 	}
 }

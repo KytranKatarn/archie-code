@@ -321,9 +321,9 @@ async def test_run_emits_progress_for_each_stage():
 
     r = await BuildLoop(tools=tools, dispatch_fn=_dispatch(OPS)).run("add feature", progress=progress)
     assert r.success, (r.stage, r.error)
-    for st in ["branch", "plan", "apply", "test", "pr", "done"]:
+    for st in ["branch", "plan", "apply", "test", "stage", "commit", "push", "pr", "done"]:
         assert st in seen, (st, seen)
-    assert seen.index("branch") < seen.index("test") < seen.index("done")
+    assert seen.index("branch") < seen.index("test") < seen.index("push") < seen.index("done")
 
 
 async def test_run_without_progress_is_backward_compatible():

@@ -359,6 +359,7 @@ async def test_build_frame_streams_progress_and_returns_result(tmp_path):
         resp = await engine.handle_message({"type": "build", "task": "add X"}, send=capture)
         assert resp["type"] == "build_result"
         assert resp["success"] is True and resp["pr_url"] == "https://gh/pr/1"
+        assert resp["merged"] is False
         assert any(f.get("type") == "progress" and f.get("stage") == "test" for f in frames)
     finally:
         await engine.db.close()
@@ -379,6 +380,35 @@ async def test_session_send_routes_through_message_path(tmp_path):
     out = engine._mcp_tool_handler("session_send", {"session_id": "s1", "text": "hi"})
     assert out.get("output") == "echo:hi"
     assert out.get("session_id") == "s1"
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_requires_approval(tmp_path):
+    """Task 5: apply_edit stashes the write + emits approval_request; the file is
+    written only after an approval frame with approved=true."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    target = tmp_path / "f.txt"
+
+    req = await engine.handle_message({
+        "type": "apply_edit", "session_id": "s1",
+        "root": str(tmp_path), "path": "f.txt", "content": "hello\n",
+    })
+    assert req["type"] == "approval_request"
+    assert req["kind"] == "apply_edit" and req["path"] == "f.txt"
+    assert not target.exists()  # nothing written yet
+
+    den = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": False})
+    assert den["type"] == "apply_cancelled"
+    assert not target.exists()
+
+    await engine.handle_message({
+        "type": "apply_edit", "session_id": "s1",
+        "root": str(tmp_path), "path": "f.txt", "content": "hello\n",
+    })
+    res = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": True})
+    assert res["type"] == "apply_result"
+    assert target.read_text() == "hello\n"
 
 
 @pytest.mark.asyncio
