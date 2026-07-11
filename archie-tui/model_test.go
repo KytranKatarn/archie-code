@@ -98,3 +98,26 @@ func TestParseEngineMessageProgress(t *testing.T) {
 		t.Fatalf("progress frame not parsed: %+v", pr)
 	}
 }
+
+func TestParseEngineMessageBadge(t *testing.T) {
+	// Task 7: agent/node/model provenance on a response frame drives the badge.
+	r := parseEngineMessage(map[string]interface{}{
+		"type": "response", "content": "hi",
+		"agent": "F.O.R.G.E.", "node": "hub", "model": "qwen2.5:7b",
+	})
+	if r.Agent != "F.O.R.G.E." || r.Node != "hub" || r.Model != "qwen2.5:7b" {
+		t.Fatalf("badge fields not parsed: %+v", r)
+	}
+}
+
+func TestChatBadgeFormat(t *testing.T) {
+	if got := chatBadge("F.O.R.G.E.", "hub", "qwen2.5:7b"); got != "\u2b21 F.O.R.G.E. \u00b7 hub \u00b7 qwen2.5:7b" {
+		t.Fatalf("badge format: %q", got)
+	}
+	if got := chatBadge("A.R.C.H.I.E.", "local", ""); got != "\u2b21 A.R.C.H.I.E. \u00b7 local" {
+		t.Fatalf("badge omit-empty: %q", got)
+	}
+	if got := chatBadge("", "", ""); got != "" {
+		t.Fatalf("empty badge must be empty: %q", got)
+	}
+}

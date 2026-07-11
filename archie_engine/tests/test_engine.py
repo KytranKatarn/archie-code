@@ -294,3 +294,24 @@ async def test_process_chat_message_no_stream_no_progress(tmp_path):
     assert result["type"] == "response"
     assert frames == []
     await engine.db.close()
+
+
+@pytest.mark.asyncio
+async def test_process_chat_message_includes_badge_fields(tmp_path):
+    """Task 7: the response frame carries agent/node/model provenance for the TUI
+    badge. Local inference -> agent defaults to A.R.C.H.I.E., node=local, model
+    from the router's model_used."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    await engine.db.initialize()
+    engine.router.route = AsyncMock(
+        return_value={"response": "answer", "model_used": "test-model"}
+    )
+    result = await engine._process_chat_message(
+        {"type": "message", "content": "What is the Bridge dispatcher?"}
+    )
+    assert result["type"] == "response"
+    assert result["agent"] == "A.R.C.H.I.E."
+    assert result["node"] == "local"
+    assert result["model"] == "test-model"
+    await engine.db.close()

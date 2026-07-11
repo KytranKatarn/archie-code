@@ -14,6 +14,11 @@ type EngineResponseMsg struct {
 	// Progress streaming (Task 3/4): intermediate frames before the final response.
 	Stage  string `json:"stage"`
 	Detail string `json:"detail"`
+	// Provenance badge (Task 7): who / where / what served the turn. Populated
+	// manually by parseEngineMessage (json tags are not used for decoding).
+	Agent string
+	Node  string
+	Model string
 	// Platform status fields
 	PlatformHub   string `json:"hub"`
 	PlatformModel string `json:"model"`

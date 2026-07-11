@@ -129,6 +129,10 @@ func parseEngineMessage(raw map[string]interface{}) EngineResponseMsg {
 		// Progress streaming (Task 3/4)
 		Stage:  getString(raw, "stage"),
 		Detail: getString(raw, "detail"),
+		// Provenance badge (Task 7)
+		Agent: getString(raw, "agent"),
+		Node:  getString(raw, "node"),
+		Model: getString(raw, "model"),
 		// Coding-surface fields (#4264): file_tree / file_content / git_diff /
 		// apply_result. The shared root/path/error keys are reused across message
 		// types — harmless because Update dispatches on Type first.
@@ -216,6 +220,22 @@ func getStringSlice(m map[string]interface{}, key string) []string {
 		}
 	}
 	return out
+}
+
+// chatBadge formats the per-response provenance badge (Task 7): who (agent) /
+// where (node) / what (model) served the turn. Empty parts are omitted; an
+// all-empty badge yields "" so the caller can skip rendering it.
+func chatBadge(agent, node, model string) string {
+	parts := make([]string, 0, 3)
+	for _, p := range []string{agent, node, model} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\u2b21 " + strings.Join(parts, " \u00b7 ")
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -440,6 +460,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					meta += " — " + msg.DispatchReason
 				}
 				m.chat.AddMessage("system", meta)
+			}
+			// Provenance badge (Task 7): agent / node / model that served the turn.
+			if badge := chatBadge(msg.Agent, msg.Node, msg.Model); badge != "" {
+				m.chat.AddMessage("system", badge)
 			}
 		case "session_created":
 			m.sessionID = msg.SessionID
