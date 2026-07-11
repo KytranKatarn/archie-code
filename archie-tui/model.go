@@ -250,10 +250,11 @@ func getStringSlice(m map[string]interface{}, key string) []string {
 	return out
 }
 
-// chatBadge formats the per-response provenance badge (Task 7): who (agent) /
-// where (node) / what (model) served the turn. Empty parts are omitted; an
-// all-empty badge yields "" so the caller can skip rendering it.
-func chatBadge(agent, node, model string) string {
+// agentBadge formats the per-response provenance badge (Task 7 / DispatchResult):
+// who (agent) / where (node) / what (model) served the turn, joined with " \u00b7 "
+// and wrapped in \u27e8\u27e9. Empty parts are omitted; an all-empty badge yields ""
+// so the caller can skip rendering it.
+func agentBadge(agent, node, model string) string {
 	parts := make([]string, 0, 3)
 	for _, p := range []string{agent, node, model} {
 		if p != "" {
@@ -263,7 +264,7 @@ func chatBadge(agent, node, model string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "\u2b21 " + strings.Join(parts, " \u00b7 ")
+	return "\u27e8" + strings.Join(parts, " \u00b7 ") + "\u27e9"
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -553,7 +554,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat.AddMessage("system", meta)
 			}
 			// Provenance badge (Task 7): agent / node / model that served the turn.
-			if badge := chatBadge(msg.Agent, msg.Node, msg.Model); badge != "" {
+			if badge := agentBadge(msg.Agent, msg.Node, msg.Model); badge != "" {
 				m.chat.AddMessage("system", badge)
 			}
 		case "session_created":
