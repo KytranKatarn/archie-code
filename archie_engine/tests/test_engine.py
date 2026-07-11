@@ -242,3 +242,55 @@ async def test_handle_inbound_job_returns_error_on_failure(tmp_path):
     assert result["success"] is False
     assert "error" in result
     await engine.db.close()
+
+
+@pytest.mark.asyncio
+async def test_process_chat_message_streams_progress(tmp_path):
+    """With stream=True and a `send` callback, the engine emits a `progress`
+    frame for the dispatch step BEFORE the final response (#cli-streaming)."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    await engine.db.initialize()
+    engine.router.route = AsyncMock(return_value={"response": "answer"})
+
+    frames = []
+
+    async def capture(frame):
+        frames.append(frame)
+
+    result = await engine._process_chat_message(
+        {"type": "message", "content": "What is the Bridge dispatcher?", "stream": True},
+        send=capture,
+    )
+
+    assert result["type"] == "response"
+    assert result["content"] == "answer"
+    progress = [f for f in frames if f.get("type") == "progress"]
+    assert progress, "expected at least one progress frame when streaming"
+    assert progress[0]["stage"] == "dispatch"
+    assert progress[0]["session_id"] == result["session_id"]
+    await engine.db.close()
+
+
+@pytest.mark.asyncio
+async def test_process_chat_message_no_stream_no_progress(tmp_path):
+    """Backward compat: without stream=True, NO progress frames are emitted even
+    if a send callback is available — legacy one-shot clients see only the reply."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    await engine.db.initialize()
+    engine.router.route = AsyncMock(return_value={"response": "answer"})
+
+    frames = []
+
+    async def capture(frame):
+        frames.append(frame)
+
+    result = await engine._process_chat_message(
+        {"type": "message", "content": "What is the Bridge dispatcher?"},
+        send=capture,
+    )
+
+    assert result["type"] == "response"
+    assert frames == []
+    await engine.db.close()

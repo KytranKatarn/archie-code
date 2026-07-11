@@ -315,8 +315,14 @@ class Engine:
         except Exception as e:
             logger.warning("Personality fetch failed: %s — using baseline", e)
 
-    async def handle_message(self, msg: dict) -> dict:
-        """Process a message from WebSocket client."""
+    async def handle_message(self, msg: dict, send=None) -> dict:
+        """Process a message from WebSocket client.
+
+        ``send``, when provided by the server, is an async callable that emits an
+        intermediate frame over the same connection (progress streaming). It is
+        forwarded only to handlers that opt into streaming; every other branch
+        ignores it, preserving the legacy single-response contract.
+        """
         msg_type = msg.get("type", "")
 
         if msg_type == "hub_status":
@@ -348,7 +354,7 @@ class Engine:
             }
 
         if msg_type == "message":
-            return await self._process_chat_message(msg)
+            return await self._process_chat_message(msg, send=send)
 
         if msg_type == "delegate":
             return await self._handle_delegation(msg)
@@ -677,9 +683,13 @@ class Engine:
         result["file_path"] = fp
         return result
 
-    async def _process_chat_message(self, msg: dict) -> dict:
+    async def _process_chat_message(self, msg: dict, send=None) -> dict:
         content = msg.get("content", "")
         session_id = msg.get("session_id")
+        # Progress streaming is strictly OPT-IN: only when the client sets
+        # stream=True AND the server supplied a send callback. A plain
+        # {type:"message"} (archie-comms, legacy TUI) streams nothing.
+        stream = bool(msg.get("stream")) and send is not None
 
         # Create session if needed
         if not session_id:
@@ -728,6 +738,17 @@ class Engine:
                     reason=f"Learned pattern: {learned['resolution'][:50]}",
                     capability=decision.capability,
                 )
+
+        # Tell the client which way this turn is being dispatched BEFORE the
+        # (potentially slow) route/inference. Emitted only for opted-in streaming
+        # clients, so legacy one-shot callers still receive exactly one frame.
+        if stream:
+            await send({
+                "type": "progress",
+                "session_id": session_id,
+                "stage": "dispatch",
+                "detail": f"{intent['type']} -> {decision.target.value}",
+            })
 
         # Build context
         context = await self.sessions.build_context(session_id)

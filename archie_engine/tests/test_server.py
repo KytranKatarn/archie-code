@@ -77,3 +77,44 @@ async def test_non_object_json_frame(server):
         await ws.send(json.dumps({"type": "ping"}))
         pong = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert pong["type"] == "pong"
+
+
+@pytest.mark.asyncio
+async def test_streaming_handler_emits_progress_then_response(server):
+    """A handler that accepts an optional `send` coroutine can emit intermediate
+    frames BEFORE its final return value. The server delivers them in order over
+    the same connection, then delivers the returned frame last (#cli-streaming)."""
+    async def stream_handler(msg, send=None):
+        if send is not None:
+            await send({"type": "progress", "stage": "a", "detail": "1"})
+            await send({"type": "progress", "stage": "b", "detail": "2"})
+        return {"type": "response", "content": "done"}
+
+    server.set_handler(stream_handler)
+    uri = f"ws://{server.host}:{server.port}"
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps({"type": "message", "content": "go"}))
+        f1 = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        f2 = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        f3 = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        assert f1["type"] == "progress" and f1["stage"] == "a"
+        assert f2["type"] == "progress" and f2["stage"] == "b"
+        assert f3["type"] == "response" and f3["content"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_legacy_msg_only_handler_still_single_response(server):
+    """Backward compat: a handler with the legacy (msg) signature — no `send`
+    param — must be called exactly as before and yield exactly one frame."""
+    async def legacy_handler(msg):
+        return {"type": "response", "content": msg.get("content", "")}
+
+    server.set_handler(legacy_handler)
+    uri = f"ws://{server.host}:{server.port}"
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps({"type": "message", "content": "hi"}))
+        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        assert resp == {"type": "response", "content": "hi"}
+        await ws.send(json.dumps({"type": "ping"}))
+        pong = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        assert pong["type"] == "pong"

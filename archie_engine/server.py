@@ -1,9 +1,10 @@
 """WebSocket server — accepts JSON messages from TUI/Web clients."""
 
 import asyncio
+import inspect
 import json
 import logging
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 import websockets
 from websockets import serve
@@ -16,7 +17,8 @@ class EngineServer:
         self.host = host
         self._requested_port = port
         self.port = port  # may change if port=0
-        self._handler: Callable[[dict], Awaitable[dict]] | None = None
+        self._handler: Callable[..., Awaitable[dict]] | None = None
+        self._handler_wants_send = False
         self._server = None
         self._connections: set = set()
 
@@ -24,9 +26,31 @@ class EngineServer:
     def is_running(self) -> bool:
         return self._server is not None
 
-    def set_handler(self, handler: Callable[[dict], Awaitable[dict]]) -> None:
-        """Set the message handler callback (called by Engine)."""
+    def set_handler(self, handler: Callable[..., Awaitable[dict]]) -> None:
+        """Set the message handler callback (called by Engine).
+
+        A handler MAY optionally accept a second parameter, ``send`` — an async
+        callable ``await send(frame: dict)`` used to emit intermediate frames
+        (progress streaming) over the same connection BEFORE its final return
+        value. Handlers written against the original one-argument contract keep
+        working unchanged: the server only passes ``send`` when the handler's
+        signature accepts it (detected below). This preserves the legacy
+        request->single-response contract that archie-comms and the current TUI
+        depend on.
+        """
         self._handler = handler
+        self._handler_wants_send = self._detect_wants_send(handler)
+
+    @staticmethod
+    def _detect_wants_send(handler) -> bool:
+        try:
+            params = inspect.signature(handler).parameters
+        except (TypeError, ValueError):
+            return False
+        if "send" in params:
+            return True
+        # A handler declaring **kwargs can also receive send=... .
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
     async def start(self) -> None:
         self._server = await serve(
@@ -48,6 +72,11 @@ class EngineServer:
 
     async def _ws_handler(self, websocket):
         self._connections.add(websocket)
+
+        async def send(frame: dict) -> None:
+            """Emit one intermediate frame on THIS connection (progress streaming)."""
+            await websocket.send(json.dumps(frame))
+
         try:
             async for raw_message in websocket:
                 try:
@@ -58,14 +87,17 @@ class EngineServer:
                     }))
                     continue
 
-                response = await self._process_message(msg)
-                await websocket.send(json.dumps(response))
+                response = await self._process_message(msg, send)
+                # A handler may stream via `send` and return None (nothing more to
+                # emit); only send a trailing frame when one was returned.
+                if response is not None:
+                    await websocket.send(json.dumps(response))
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
             self._connections.discard(websocket)
 
-    async def _process_message(self, msg: dict) -> dict:
+    async def _process_message(self, msg: dict, send=None) -> dict | None:
         # A valid-JSON but non-object frame (e.g. `42`, `"hi"`, `[]`) would raise
         # AttributeError on .get below and kill the connection (the surrounding
         # try only catches ConnectionClosed). Return a clean error frame instead.
@@ -78,6 +110,8 @@ class EngineServer:
 
         if self._handler:
             try:
+                if self._handler_wants_send and send is not None:
+                    return await self._handler(msg, send=send)
                 return await self._handler(msg)
             except Exception as e:
                 logger.error("Handler error: %s", e)
