@@ -74,3 +74,36 @@ class SessionManager:
             "working_dir": session["working_dir"],
             "history": history,
         }
+
+    async def link_conversation(self, session_id: str, conversation_id: str) -> dict:
+        """Link an engine session to an archie-comms conversation (Task 6).
+
+        Establishes the handle the MCP session_send tool uses to route a message
+        from Claude into the linked conversation. Idempotent — re-linking updates
+        the existing row (one conversation per session). Returns the link record,
+        or {"error": ...} when the session does not exist.
+        """
+        session = await self.get(session_id)
+        if not session:
+            return {"error": f"session not found: {session_id}"}
+        await self._persist_link(session_id, conversation_id)
+        return {"session_id": session_id, "conversation_id": conversation_id}
+
+    async def _persist_link(self, session_id: str, conversation_id: str) -> None:
+        """Upsert the session<->conversation link row (Task 6)."""
+        await self.db.execute(
+            "INSERT INTO conversation_links (session_id, conversation_id, linked_at) "
+            "VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "conversation_id = excluded.conversation_id, linked_at = datetime('now')",
+            (session_id, conversation_id),
+        )
+        await self.db.commit()
+
+    async def get_linked_conversation(self, session_id: str) -> str | None:
+        """Return the conversation_id linked to a session, or None (Task 6)."""
+        row = await self.db.fetchone(
+            "SELECT conversation_id FROM conversation_links WHERE session_id = ?",
+            (session_id,),
+        )
+        return row["conversation_id"] if row else None

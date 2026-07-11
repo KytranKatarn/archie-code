@@ -11,6 +11,21 @@ type EngineResponseMsg struct {
 	Skills         []Skill  `json:"skills"`
 	DispatchTarget string   `json:"dispatch_target"`
 	DispatchReason string   `json:"dispatch_reason"`
+	// Progress streaming (Task 3/4): intermediate frames before the final response.
+	Stage  string `json:"stage"`
+	Detail string `json:"detail"`
+	// Provenance badge (Task 7): who / where / what served the turn. Populated
+	// manually by parseEngineMessage (json tags are not used for decoding).
+	Agent string
+	Node  string
+	Model string
+	// Tool palette (Task 5): tools_list frame.
+	Tools []Tool
+	// Driveable build (Task 5): build_result frame.
+	BuildSuccess bool
+	BuildStage   string
+	Branch       string
+	PRURL        string
 	// Platform status fields
 	PlatformHub   string `json:"hub"`
 	PlatformModel string `json:"model"`
@@ -40,6 +55,11 @@ type Repo struct {
 	Name  string `json:"name"`
 	Path  string `json:"path"`
 	Label string `json:"label"`
+}
+
+type Tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type ConnectedMsg struct {

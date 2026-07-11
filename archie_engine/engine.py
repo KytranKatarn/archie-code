@@ -69,6 +69,7 @@ class Engine:
             {"name": "git_diff", "description": "Git diff of changes", "parameters": {}},
             {"name": "shell_exec", "description": "Execute shell command", "parameters": {"command": {"type": "string"}}},
             {"name": "search_knowledge", "description": "Search ARCHIE knowledge base", "parameters": {"query": {"type": "string"}}},
+            {"name": "session_send", "description": "Send a message into an engine session (routed to its linked archie-comms conversation)", "parameters": {"session_id": {"type": "string"}, "content": {"type": "string"}, "role": {"type": "string"}}},
         ])
         # Wire the tool handler so tools/call works (was unregistered — stub bug)
         self.mcp_server.set_tool_handler(self._mcp_tool_handler)
@@ -225,6 +226,14 @@ class Engine:
                 except Exception as e:
                     return {"output": f"shell_exec failed: {e}"}
 
+            elif tool_name == "session_send":
+                sess_id = arguments.get("session_id", "")
+                content = arguments.get("content", "")
+                role = arguments.get("role", "assistant")
+                if not sess_id or not content:
+                    return {"output": "session_send requires session_id and content"}
+                return await self._do_session_send(sess_id, content, role)
+
             return {"output": f"Unknown tool: {tool_name}"}
 
         # Run async code from synchronous context
@@ -238,6 +247,37 @@ class Engine:
             return loop.run_until_complete(_run())
         except Exception as e:
             return {"output": f"Tool handler error: {e}"}
+
+    async def _do_session_send(self, session_id: str, content: str,
+                               role: str = "assistant") -> dict:
+        """Record a message into a session + resolve its linked conversation
+        (Task 6, backs the MCP session_send tool). Opens a FRESH short-lived DB
+        connection so it is safe to call from the MCP handler's separate event
+        loop/thread — aiosqlite binds a connection to its creating loop, so reusing
+        self.db there would raise. archie-comms delivery is out of scope here; this
+        returns the linked conversation_id for that side to consume.
+        """
+        from archie_engine.database import Database
+        from archie_engine.session import SessionManager
+
+        db = Database(self.db.db_path)
+        await db.initialize()
+        try:
+            mgr = SessionManager(db)
+            session = await mgr.get(session_id)
+            if not session:
+                return {"output": f"session not found: {session_id}", "error": "no_session"}
+            message_id = await mgr.add_message(session_id, role, content)
+            conversation_id = await mgr.get_linked_conversation(session_id)
+        finally:
+            await db.close()
+
+        if conversation_id:
+            return {"output": f"queued message {message_id} -> conversation {conversation_id}",
+                    "session_id": session_id, "conversation_id": conversation_id,
+                    "message_id": message_id}
+        return {"output": f"recorded message {message_id} in session {session_id} (no linked conversation)",
+                "session_id": session_id, "message_id": message_id}
 
     def _build_tool_registry(self, workspace: Path | None = None,
                              scope_config: dict | None = None,
@@ -315,8 +355,14 @@ class Engine:
         except Exception as e:
             logger.warning("Personality fetch failed: %s — using baseline", e)
 
-    async def handle_message(self, msg: dict) -> dict:
-        """Process a message from WebSocket client."""
+    async def handle_message(self, msg: dict, send=None) -> dict:
+        """Process a message from WebSocket client.
+
+        ``send``, when provided by the server, is an async callable that emits an
+        intermediate frame over the same connection (progress streaming). It is
+        forwarded only to handlers that opt into streaming; every other branch
+        ignores it, preserving the legacy single-response contract.
+        """
         msg_type = msg.get("type", "")
 
         if msg_type == "hub_status":
@@ -341,14 +387,37 @@ class Engine:
                 return {"type": "session_resumed", "session_id": session["id"]}
             return {"type": "error", "error": f"Session not found: {session_id}"}
 
+        if msg_type == "link_conversation":
+            session_id = msg.get("session_id", "")
+            conversation_id = msg.get("conversation_id", "")
+            if not session_id or not conversation_id:
+                return {"type": "error",
+                        "error": "link_conversation requires session_id and conversation_id"}
+            result = await self.sessions.link_conversation(session_id, conversation_id)
+            if "error" in result:
+                return {"type": "error", "error": result["error"]}
+            return {"type": "conversation_linked", **result}
+
         if msg_type == "list_skills":
             return {
                 "type": "skills_list",
                 "skills": self.skill_registry.list_skills(),
             }
 
+        if msg_type == "list_tools":
+            return {
+                "type": "tools_list",
+                "tools": [
+                    {"name": t["name"], "description": t.get("description", "")}
+                    for t in self.mcp_server.get_tool_definitions()
+                ],
+            }
+
+        if msg_type == "build":
+            return await self._handle_build(msg, send=send)
+
         if msg_type == "message":
-            return await self._process_chat_message(msg)
+            return await self._process_chat_message(msg, send=send)
 
         if msg_type == "delegate":
             return await self._handle_delegation(msg)
@@ -484,7 +553,8 @@ class Engine:
             return {"success": False, "error": str(e)}
 
     async def run_build(self, task: str, base: str = "main", module: str | None = None,
-                         target: str = "archie-code", target_file: str | None = None) -> dict:
+                         target: str = "archie-code", target_file: str | None = None,
+                         progress=None) -> dict:
         """Run one autonomous coordinate→build→test→deploy cycle (#4256).
 
         target='archie-code' (default) builds the engine's OWN repo in /workspace
@@ -589,7 +659,8 @@ class Engine:
                 plan_max_retries=self.config.build_plan_max_retries,
                 plan_file_budget=self.config.build_plan_file_budget,
             )
-            result = await loop.run(task, base=base, module=module, target_file=target_file)
+            result = await loop.run(task, base=base, module=module, target_file=target_file,
+                                    progress=progress)
             await loop.emit_telemetry(result)
         finally:
             # Always tear the worktree down + drop its local branch. A successful build
@@ -677,9 +748,42 @@ class Engine:
         result["file_path"] = fp
         return result
 
-    async def _process_chat_message(self, msg: dict) -> dict:
+    async def _handle_build(self, msg: dict, send=None) -> dict:
+        """Drive one coordinate->build->test->PR cycle from a ws client (Task 5).
+
+        Streams a `progress` frame at each build stage (when the server supplied a
+        `send` callback) and returns a terminal `build_result`. NEVER merges — the
+        build loop opens a PR for review and refuses protected branches; this handler
+        only wraps it with progress emission. All inference stays on the DHQ path.
+        """
+        task = (msg.get("task") or "").strip()
+        if not task:
+            return {"type": "build_result", "success": False, "error": "no task provided",
+                    "stage": "init", "branch": "", "files": [], "pr_url": None,
+                    "pr_number": None, "duration_ms": 0,
+                    "target": msg.get("target", "archie-code")}
+
+        async def _prog(stage: str, detail: str = "") -> None:
+            if send is not None:
+                await send({"type": "progress", "stage": stage, "detail": detail})
+
+        result = await self.run_build(
+            task,
+            base=msg.get("base", "main"),
+            target=msg.get("target", "archie-code"),
+            target_file=msg.get("target_file"),
+            module=msg.get("module"),
+            progress=_prog,
+        )
+        return {"type": "build_result", **result}
+
+    async def _process_chat_message(self, msg: dict, send=None) -> dict:
         content = msg.get("content", "")
         session_id = msg.get("session_id")
+        # Progress streaming is strictly OPT-IN: only when the client sets
+        # stream=True AND the server supplied a send callback. A plain
+        # {type:"message"} (archie-comms, legacy TUI) streams nothing.
+        stream = bool(msg.get("stream")) and send is not None
 
         # Create session if needed
         if not session_id:
@@ -729,6 +833,17 @@ class Engine:
                     capability=decision.capability,
                 )
 
+        # Tell the client which way this turn is being dispatched BEFORE the
+        # (potentially slow) route/inference. Emitted only for opted-in streaming
+        # clients, so legacy one-shot callers still receive exactly one frame.
+        if stream:
+            await send({
+                "type": "progress",
+                "session_id": session_id,
+                "stage": "dispatch",
+                "detail": f"{intent['type']} -> {decision.target.value}",
+            })
+
         # Build context
         context = await self.sessions.build_context(session_id)
 
@@ -743,6 +858,19 @@ class Engine:
         response_text = result.get("response", "")
         await self.sessions.add_message(session_id, "assistant", response_text)
 
+        # Provenance badge (Task 7): who / where / what served this turn. agent_name
+        # + model_used come from the router contract (platform dispatch fills both;
+        # local inference fills model only, so agent defaults to this engine's
+        # A.R.C.H.I.E.). node is best-effort: the engine's own node for local, or
+        # "hub" for a platform-dispatched turn (the connector does not return the
+        # exact fleet node the DHQ selected).
+        if decision.target.value == "platform":
+            node = "hub"
+        elif self.hub_heartbeat is not None:
+            node = self.hub_heartbeat.node_id
+        else:
+            node = "local"
+
         return {
             "type": "response",
             "session_id": session_id,
@@ -750,6 +878,9 @@ class Engine:
             "intent": intent["type"],
             "dispatch_target": decision.target.value,
             "dispatch_reason": decision.reason,  # surfaced inline by archie-tui (#4264 PR 4)
+            "agent": result.get("agent_name") or "A.R.C.H.I.E.",
+            "node": node,
+            "model": result.get("model_used") or "",
             "tool_calls": result.get("tool_calls", []),
         }
 

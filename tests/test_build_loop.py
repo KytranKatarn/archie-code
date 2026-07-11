@@ -308,3 +308,26 @@ async def test_plan_injects_file_content_so_real_old_string_validates():
     # the actual file content was injected into the prompt the model saw
     assert "<<<FILE archie_engine/x.py>>>" in disp.state["prompts"][0]
     assert "TARGET = 1" in disp.state["prompts"][0]
+
+
+# --- Task 5: driveable build loop — additive progress emission --------------
+
+async def test_run_emits_progress_for_each_stage():
+    tools = FakeTools()
+    seen = []
+
+    async def progress(stage, detail=""):
+        seen.append(stage)
+
+    r = await BuildLoop(tools=tools, dispatch_fn=_dispatch(OPS)).run("add feature", progress=progress)
+    assert r.success, (r.stage, r.error)
+    for st in ["branch", "plan", "apply", "test", "pr", "done"]:
+        assert st in seen, (st, seen)
+    assert seen.index("branch") < seen.index("test") < seen.index("done")
+
+
+async def test_run_without_progress_is_backward_compatible():
+    # progress defaults to None -> the loop behaves exactly as before (no callback,
+    # no change to the scope-guard / deploy-on-green / never-merge logic).
+    r = await BuildLoop(tools=FakeTools(), dispatch_fn=_dispatch(OPS)).run("x")
+    assert r.success and r.pr_url == "https://gh/pr/7"
