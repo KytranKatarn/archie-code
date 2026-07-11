@@ -301,24 +301,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, ecmd
 		}
 		// Apply-edit approval (Task 5): the engine emitted an approval_request;
-		// the operator vets it with y/n, which sends the approval frame back.
+		// the operator vets it with y/n. The send status is surfaced so a
+		// disconnected/failed decision is never silently dropped (F.O.R.G.E.).
 		if m.pendingApply != nil {
 			switch msg.String() {
 			case "y", "Y", "enter":
-				if m.connected {
-					_ = m.client.Send(map[string]interface{}{
-						"type": "approval", "session_id": m.pendingApply.sessionID, "approved": true,
-					})
-				}
+				m.sendApproval(true)
 				m.pendingApply = nil
 				return m, nil
 			case "n", "N", "esc":
-				if m.connected {
-					_ = m.client.Send(map[string]interface{}{
-						"type": "approval", "session_id": m.pendingApply.sessionID, "approved": false,
-					})
-				}
-				m.chat.AddMessage("system", "apply declined")
+				m.sendApproval(false)
 				m.pendingApply = nil
 				return m, nil
 			}
@@ -767,6 +759,28 @@ func (m model) explorerEnter() (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// sendApproval delivers the operator's decision on a staged apply_edit and reports
+// whether it actually reached the engine. A disconnected or failed send is surfaced
+// (not silently dropped) so the operator knows the engine will DENY BY TIMEOUT
+// rather than assuming their keypress landed (F.O.R.G.E. review on #34).
+func (m model) sendApproval(approved bool) {
+	verb := "approved"
+	if !approved {
+		verb = "denied"
+	}
+	if !m.connected {
+		m.chat.AddMessage("system", "approval not delivered (disconnected) \u2014 engine will deny by timeout")
+		return
+	}
+	if err := m.client.Send(map[string]interface{}{
+		"type": "approval", "session_id": m.pendingApply.sessionID, "approved": approved,
+	}); err != nil {
+		m.chat.AddMessage("system", "approval not delivered (send failed) \u2014 engine will deny by timeout")
+		return
+	}
+	m.chat.AddMessage("system", "approval sent: "+verb)
 }
 
 func (m model) View() string {

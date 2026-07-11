@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -154,6 +155,30 @@ func TestParseEngineMessageBuildResult(t *testing.T) {
 	})
 	if fail.BuildSuccess || fail.BuildStage != "test" || fail.ApplyError != "2 failed" {
 		t.Fatalf("failed build_result not parsed: %+v", fail)
+	}
+}
+
+func TestApprovalKeypressReportsDeliveryStatus(t *testing.T) {
+	// F.O.R.G.E. (#34): a disconnected operator pressing Y/N must be TOLD the
+	// approval was not delivered (engine denies by timeout), not silently dropped.
+	m := initialModel("ws://x")
+	nm, _ := m.Update(EngineResponseMsg{Type: "approval_request", SessionID: "s1", FilePath: "a.go", Kind: "apply_edit"})
+	mm := nm.(model)
+	mm.connected = false
+
+	nm2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m3 := nm2.(model)
+	if m3.pendingApply != nil {
+		t.Fatal("keypress must clear the pending approval")
+	}
+	var found bool
+	for _, msg := range m3.chat.Messages {
+		if strings.Contains(msg.Content, "not delivered") && strings.Contains(msg.Content, "disconnected") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("disconnected approval must surface a not-delivered status; messages=%v", m3.chat.Messages)
 	}
 }
 
