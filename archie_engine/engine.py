@@ -75,8 +75,10 @@ class Engine:
         self.mcp_server.set_tool_handler(self._mcp_tool_handler)
 
         # Approval-gated edits (Task 5): apply_edit stashes here until an approval
-        # frame resolves it (keyed by session_id).
+        # frame resolves it (keyed by session_id). The approval window fails CLOSED —
+        # a lapsed/never-arriving approval NEVER writes.
         self._pending_edits: dict = {}
+        self._approval_timeout_s: float = 300.0
 
         # Hub connectivity (optional) — must be set up BEFORE router so hub_connector is available
         self.hub_connector: HubConnector | None = None
@@ -740,7 +742,18 @@ class Engine:
             fromfile=path, tofile=path,
         ))
 
-        self._pending_edits[session_id] = {"root": root, "path": path, "content": content}
+        import time
+
+        now = time.monotonic()
+        # Prune any edits whose approval window already lapsed (fail-closed cleanup).
+        self._pending_edits = {
+            k: v for k, v in self._pending_edits.items()
+            if v.get("deadline", float("inf")) > now
+        }
+        self._pending_edits[session_id] = {
+            "root": root, "path": path, "content": content,
+            "deadline": now + self._approval_timeout_s,
+        }
         return {"type": "approval_request", "session_id": session_id,
                 "kind": "apply_edit", "path": path, "diff": diff}
 
@@ -757,8 +770,13 @@ class Engine:
             _k, pending = self._pending_edits.popitem()
         if not pending:
             return {"type": "error", "error": "no pending edit to approve"}
-        if not approved:
-            return {"type": "apply_cancelled", "path": pending["path"]}
+        import time
+
+        expired = time.monotonic() > pending.get("deadline", float("inf"))
+        if not approved or expired:
+            # Fail closed: a decline OR a lapsed approval window NEVER writes.
+            reason = "timeout" if (expired and approved) else "declined"
+            return {"type": "apply_cancelled", "path": pending["path"], "reason": reason}
         return {"type": "apply_result",
                 **write_file(pending["root"], pending["path"], pending["content"])}
 

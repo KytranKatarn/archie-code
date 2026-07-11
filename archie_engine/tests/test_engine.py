@@ -412,6 +412,25 @@ async def test_apply_edit_requires_approval(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_apply_edit_approval_fails_closed_on_timeout(tmp_path):
+    """Task 5: a lapsed approval window fails CLOSED — even approved=true does not
+    write once the deadline has passed."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    engine._approval_timeout_s = 0.0  # any later approval is already past deadline
+    target = tmp_path / "f.txt"
+
+    await engine.handle_message({
+        "type": "apply_edit", "session_id": "s1",
+        "root": str(tmp_path), "path": "f.txt", "content": "x\n",
+    })
+    res = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": True})
+    assert res["type"] == "apply_cancelled"
+    assert res.get("reason") == "timeout"
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
 async def test_mcp_tools_include_session_send(tmp_path):
     config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
     engine = Engine(config)
