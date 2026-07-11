@@ -315,3 +315,49 @@ async def test_process_chat_message_includes_badge_fields(tmp_path):
     assert result["node"] == "local"
     assert result["model"] == "test-model"
     await engine.db.close()
+
+
+@pytest.mark.asyncio
+async def test_list_tools_returns_tool_definitions(tmp_path):
+    """Task 5 (tool palette): the engine exposes its MCP tool definitions to the TUI."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    await engine.db.initialize()
+    try:
+        resp = await engine.handle_message({"type": "list_tools"})
+        assert resp["type"] == "tools_list"
+        assert isinstance(resp["tools"], list) and len(resp["tools"]) > 0
+        assert all("name" in t for t in resp["tools"])
+    finally:
+        await engine.db.close()
+
+
+@pytest.mark.asyncio
+async def test_build_frame_streams_progress_and_returns_result(tmp_path):
+    """Task 5 (driveable build loop): a `build` frame drives run_build, forwards a
+    progress callback that streams `progress` frames, and returns a build_result."""
+    config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
+    engine = Engine(config)
+    await engine.db.initialize()
+
+    async def fake_run_build(task, **kwargs):
+        prog = kwargs.get("progress")
+        if prog is not None:
+            await prog("test", "pytest")
+        return {"success": True, "stage": "done", "pr_url": "https://gh/pr/1",
+                "branch": "engine/x", "files": [], "duration_ms": 5,
+                "target": "archie-code", "error": "", "pr_number": 1}
+
+    engine.run_build = fake_run_build
+    frames = []
+
+    async def capture(f):
+        frames.append(f)
+
+    try:
+        resp = await engine.handle_message({"type": "build", "task": "add X"}, send=capture)
+        assert resp["type"] == "build_result"
+        assert resp["success"] is True and resp["pr_url"] == "https://gh/pr/1"
+        assert any(f.get("type") == "progress" and f.get("stage") == "test" for f in frames)
+    finally:
+        await engine.db.close()

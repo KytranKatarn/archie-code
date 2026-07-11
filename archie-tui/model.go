@@ -13,22 +13,32 @@ import (
 	"github.com/KytranKatarn/archie-tui/views"
 )
 
+// pendingEdit is an edit staged by the editor (Ctrl+S) awaiting operator approval
+// before it is sent as an apply_edit (Task 5).
+type pendingEdit struct {
+	root    string
+	path    string
+	content string
+}
+
 type model struct {
-	input       textinput.Model
-	chat        *views.ChatView
-	statusBar   *views.StatusBar
-	skillPicker *views.SkillPicker
-	companion   *views.CompanionView
-	statusPanel *views.StatusPanel
-	explorer    *views.FileExplorer
-	editor      textarea.Model
-	editing     bool
-	client      *Client
-	sessionID   string
-	width       int
-	height      int
-	connected   bool
-	err         error
+	input        textinput.Model
+	chat         *views.ChatView
+	statusBar    *views.StatusBar
+	skillPicker  *views.SkillPicker
+	toolPalette  *views.ToolPalette
+	companion    *views.CompanionView
+	statusPanel  *views.StatusPanel
+	explorer     *views.FileExplorer
+	editor       textarea.Model
+	editing      bool
+	pendingApply *pendingEdit
+	client       *Client
+	sessionID    string
+	width        int
+	height       int
+	connected    bool
+	err          error
 }
 
 func initialModel(wsURL string) model {
@@ -49,6 +59,7 @@ func initialModel(wsURL string) model {
 		chat:        views.NewChatView(),
 		statusBar:   views.NewStatusBar(),
 		skillPicker: views.NewSkillPicker(),
+		toolPalette: views.NewToolPalette(),
 		companion:   views.NewCompanionView(),
 		statusPanel: views.NewStatusPanel(),
 		explorer:    views.NewFileExplorer(),
@@ -133,6 +144,11 @@ func parseEngineMessage(raw map[string]interface{}) EngineResponseMsg {
 		Agent: getString(raw, "agent"),
 		Node:  getString(raw, "node"),
 		Model: getString(raw, "model"),
+		// build_result (Task 5)
+		BuildSuccess: getBool(raw, "success"),
+		BuildStage:   getString(raw, "stage"),
+		Branch:       getString(raw, "branch"),
+		PRURL:        getString(raw, "pr_url"),
 		// Coding-surface fields (#4264): file_tree / file_content / git_diff /
 		// apply_result. The shared root/path/error keys are reused across message
 		// types — harmless because Update dispatches on Type first.
@@ -166,6 +182,18 @@ func parseEngineMessage(raw map[string]interface{}) EngineResponseMsg {
 					Name:        getString(sm, "name"),
 					Description: getString(sm, "description"),
 					Source:      getString(sm, "source"),
+				})
+			}
+		}
+	}
+
+	// tools_list: tools: [{name, description}] (Task 5)
+	if toolsRaw, ok := raw["tools"].([]interface{}); ok {
+		for _, tr := range toolsRaw {
+			if tm, ok := tr.(map[string]interface{}); ok {
+				resp.Tools = append(resp.Tools, Tool{
+					Name:        getString(tm, "name"),
+					Description: getString(tm, "description"),
 				})
 			}
 		}
@@ -245,15 +273,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.editing {
 			switch msg.String() {
 			case "ctrl+s":
-				// Defensive: never write back a buffer sourced from a
-				// truncated read (entry is already blocked in the "e" handler).
+				// Approval gate (Task 5): stage the edit for confirmation instead of
+				// applying immediately. Defensive: never stage a buffer from a truncated
+				// read (entry is already blocked in the "e" handler).
 				if m.connected && m.explorer.OpenPath != "" && !m.explorer.OpenTruncated {
-					_ = m.client.Send(map[string]interface{}{
-						"type":    "apply_edit",
-						"root":    m.explorer.CurrentRepo,
-						"path":    m.explorer.OpenPath,
-						"content": m.editor.Value(),
-					})
+					m.pendingApply = &pendingEdit{
+						root:    m.explorer.CurrentRepo,
+						path:    m.explorer.OpenPath,
+						content: m.editor.Value(),
+					}
 				}
 				m.editing = false
 				m.editor.Blur()
@@ -266,6 +294,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var ecmd tea.Cmd
 			m.editor, ecmd = m.editor.Update(msg)
 			return m, ecmd
+		}
+		// Apply-edit approval gate (Task 5): a staged edit awaits y/n before send.
+		if m.pendingApply != nil {
+			switch msg.String() {
+			case "y", "Y", "enter":
+				pe := m.pendingApply
+				if m.connected {
+					_ = m.client.Send(map[string]interface{}{
+						"type": "apply_edit", "root": pe.root, "path": pe.path, "content": pe.content,
+					})
+				}
+				m.pendingApply = nil
+				return m, nil
+			case "n", "N", "esc":
+				m.chat.AddMessage("system", "apply cancelled")
+				m.pendingApply = nil
+				return m, nil
+			}
+			return m, nil
 		}
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
@@ -282,6 +329,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.SetValue("/" + skill.Name + " ")
 					m.skillPicker.Visible = false
 				}
+				return m, nil
+			}
+			if m.toolPalette.Visible {
+				if m.toolPalette.Selected < len(m.toolPalette.Tools) {
+					m.input.SetValue(m.input.Value() + m.toolPalette.Tools[m.toolPalette.Selected].Name)
+				}
+				m.toolPalette.Visible = false
 				return m, nil
 			}
 			val := strings.TrimSpace(m.input.Value())
@@ -310,6 +364,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.skillPicker.Visible = false
 				return m, nil
 			}
+			if m.toolPalette.Visible {
+				m.toolPalette.Visible = false
+				return m, nil
+			}
 		case "ctrl+s":
 			m.statusPanel.Visible = !m.statusPanel.Visible
 			if m.statusPanel.Visible && m.connected {
@@ -325,6 +383,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.explorer.Repos) == 0 && m.connected {
 					_ = m.client.Send(map[string]interface{}{"type": "repo_list"})
 				}
+			}
+			return m, nil
+		case "ctrl+t":
+			m.toolPalette.Visible = !m.toolPalette.Visible
+			if m.toolPalette.Visible {
+				m.toolPalette.Selected = 0
+				if len(m.toolPalette.Tools) == 0 && m.connected {
+					_ = m.client.Send(map[string]interface{}{"type": "list_tools"})
+				}
+			}
+			return m, nil
+		case "ctrl+b":
+			task := strings.TrimSpace(m.input.Value())
+			if task == "" {
+				m.chat.AddMessage("system", "Type a build task, then Ctrl+B to drive the build loop.")
+				return m, nil
+			}
+			if m.connected {
+				m.input.SetValue("")
+				m.chat.AddMessage("user", "build: "+task)
+				_ = m.client.Send(map[string]interface{}{"type": "build", "task": task})
+				m.companion.SetState(views.StateThinking, "building...")
+			} else {
+				m.chat.AddMessage("system", "Not connected to engine")
 			}
 			return m, nil
 		case "backspace":
@@ -374,6 +456,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.skillPicker.Selected--
 				return m, nil
 			}
+			if m.toolPalette.Visible && m.toolPalette.Selected > 0 {
+				m.toolPalette.Selected--
+				return m, nil
+			}
 		case "down":
 			if m.explorer.Visible {
 				if m.explorer.Selected < m.explorer.MaxIndex() {
@@ -386,6 +472,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.skillPicker.Selected < len(filtered)-1 {
 					m.skillPicker.Selected++
 				}
+				return m, nil
+			}
+			if m.toolPalette.Visible && m.toolPalette.Selected < len(m.toolPalette.Tools)-1 {
+				m.toolPalette.Selected++
 				return m, nil
 			}
 		}
@@ -405,6 +495,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.Width = msg.Width
 		m.skillPicker.Width = msg.Width
 		m.skillPicker.Height = msg.Height / 2
+		m.toolPalette.Width = msg.Width
 		m.companion.Width = msg.Width
 		m.companion.Height = msg.Height
 		m.statusPanel.Width = msg.Width / 3
@@ -475,6 +566,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				items = append(items, views.SkillItem{Name: s.Name, Description: s.Description})
 			}
 			m.skillPicker.Skills = items
+		case "tools_list":
+			var titems []views.ToolItem
+			for _, tl := range msg.Tools {
+				titems = append(titems, views.ToolItem{Name: tl.Name, Description: tl.Description})
+			}
+			m.toolPalette.Tools = titems
+		case "build_result":
+			if msg.BuildSuccess {
+				pr := msg.PRURL
+				if pr == "" {
+					pr = "(no PR url)"
+				}
+				m.chat.AddMessage("system", "\u2713 build passed \u2014 PR: "+pr)
+				m.companion.SetState(views.StateHappy, "shipped!")
+			} else {
+				detail := msg.ApplyError
+				if detail == "" {
+					detail = msg.BuildStage
+				}
+				m.chat.AddMessage("system", "build failed at "+msg.BuildStage+": "+detail)
+				m.companion.SetState(views.StateConcerned, "build broke...")
+			}
 		case "repo_list":
 			var repos []views.RepoItem
 			for _, r := range msg.Repos {
@@ -625,6 +738,12 @@ func (m model) View() string {
 		skillSection = m.skillPicker.Render()
 	}
 
+	// Tool palette overlay (Task 5)
+	var toolSection string
+	if m.toolPalette.Visible {
+		toolSection = m.toolPalette.Render()
+	}
+
 	// Input area
 	inputLine := lipgloss.NewStyle().Padding(0, 1).Render(m.input.View())
 
@@ -649,6 +768,14 @@ func (m model) View() string {
 	}
 	if skillSection != "" {
 		sections = append(sections, skillSection)
+	}
+	if toolSection != "" {
+		sections = append(sections, toolSection)
+	}
+	if m.pendingApply != nil {
+		confirm := lipgloss.NewStyle().Foreground(lipgloss.Color("#fbbf24")).Bold(true).
+			Render("Apply changes to " + m.pendingApply.path + "?  [y] apply   [n] cancel")
+		sections = append(sections, confirm)
 	}
 	if explorerSection := m.explorer.Render(); explorerSection != "" {
 		sections = append(sections, explorerSection)

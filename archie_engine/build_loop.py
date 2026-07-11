@@ -111,20 +111,31 @@ class BuildLoop:
     # ------------------------------------------------------------------
 
     async def run(self, task: str, base: str = "main", branch: str | None = None,
-                  module: str | None = None, target_file: str | None = None) -> BuildResult:
+                  module: str | None = None, target_file: str | None = None,
+                  progress=None) -> BuildResult:
         start = time.monotonic()
         branch = branch or _branch_name(task)
         result = BuildResult(task=task, branch=branch)
         result.module = module  # target platform Code-Health module → drives the loop-closer reverify
 
+        async def _emit(stage: str, detail: str = "") -> None:
+            # Progress streaming (Task 5): a no-op when no callback is supplied, so
+            # every existing caller is byte-for-byte unchanged. Emits ONLY at stage
+            # boundaries — the build logic (scope guard, deploy-on-green, never-merge,
+            # protected-branch refusal, token fail-closed) is untouched.
+            if progress is not None:
+                await progress(stage, detail)
+
         if base in {"", None}:
             base = "main"
 
+        await _emit("branch", branch)
         # 1. branch (off the current HEAD)
         br = await self.tools.execute("git_ops", operation="branch", action="create", name=branch)
         if not br.success:
             return self._done(result.fail("branch", br.error), start)
 
+        await _emit("plan", "coordinating change set")
         # 2. coordinate — plan the change set via DHQ, then DRY-RUN validate the whole
         # op-list and re-prompt the model with the exact error on a parse OR validation
         # failure (model-independent reliability; #380 Phase 1). Nothing is written until
@@ -133,6 +144,7 @@ class BuildLoop:
         if plan_err:
             return self._done(result.fail("plan", plan_err), start)
 
+        await _emit("apply", "applying ops")
         # 3. build — apply each op, deny-by-default scope-guarded
         applied: list[str] = []
         for op in ops:
@@ -154,6 +166,7 @@ class BuildLoop:
             applied.append(path)
         result.files = applied
 
+        await _emit("test", self.test_command)
         # 4. test — deploy ONLY on green
         tr = await self.tools.execute("shell_ops", command=self.test_command, timeout=self.test_timeout)
         result.tests_passed = bool(tr.success)
@@ -161,6 +174,7 @@ class BuildLoop:
         if not tr.success:
             return self._done(result.fail("test", (tr.error or tr.output or "tests failed")[:500]), start)
 
+        await _emit("pr", "opening PR")
         # 5. deploy = open a PR (NEVER merge)
         ga = await self.tools.execute("git_ops", operation="add", paths=applied)
         if not ga.success:
@@ -182,6 +196,7 @@ class BuildLoop:
         result.pr_number = meta.get("number")
         result.success = True
         result.stage = "done"
+        await _emit("done", result.pr_url or "")
         return self._done(result, start)
 
     # ------------------------------------------------------------------

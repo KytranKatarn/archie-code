@@ -353,6 +353,18 @@ class Engine:
                 "skills": self.skill_registry.list_skills(),
             }
 
+        if msg_type == "list_tools":
+            return {
+                "type": "tools_list",
+                "tools": [
+                    {"name": t["name"], "description": t.get("description", "")}
+                    for t in self.mcp_server.get_tool_definitions()
+                ],
+            }
+
+        if msg_type == "build":
+            return await self._handle_build(msg, send=send)
+
         if msg_type == "message":
             return await self._process_chat_message(msg, send=send)
 
@@ -490,7 +502,8 @@ class Engine:
             return {"success": False, "error": str(e)}
 
     async def run_build(self, task: str, base: str = "main", module: str | None = None,
-                         target: str = "archie-code", target_file: str | None = None) -> dict:
+                         target: str = "archie-code", target_file: str | None = None,
+                         progress=None) -> dict:
         """Run one autonomous coordinate→build→test→deploy cycle (#4256).
 
         target='archie-code' (default) builds the engine's OWN repo in /workspace
@@ -595,7 +608,8 @@ class Engine:
                 plan_max_retries=self.config.build_plan_max_retries,
                 plan_file_budget=self.config.build_plan_file_budget,
             )
-            result = await loop.run(task, base=base, module=module, target_file=target_file)
+            result = await loop.run(task, base=base, module=module, target_file=target_file,
+                                    progress=progress)
             await loop.emit_telemetry(result)
         finally:
             # Always tear the worktree down + drop its local branch. A successful build
@@ -682,6 +696,35 @@ class Engine:
         result["issue_id"] = picked.get("id")
         result["file_path"] = fp
         return result
+
+    async def _handle_build(self, msg: dict, send=None) -> dict:
+        """Drive one coordinate->build->test->PR cycle from a ws client (Task 5).
+
+        Streams a `progress` frame at each build stage (when the server supplied a
+        `send` callback) and returns a terminal `build_result`. NEVER merges — the
+        build loop opens a PR for review and refuses protected branches; this handler
+        only wraps it with progress emission. All inference stays on the DHQ path.
+        """
+        task = (msg.get("task") or "").strip()
+        if not task:
+            return {"type": "build_result", "success": False, "error": "no task provided",
+                    "stage": "init", "branch": "", "files": [], "pr_url": None,
+                    "pr_number": None, "duration_ms": 0,
+                    "target": msg.get("target", "archie-code")}
+
+        async def _prog(stage: str, detail: str = "") -> None:
+            if send is not None:
+                await send({"type": "progress", "stage": stage, "detail": detail})
+
+        result = await self.run_build(
+            task,
+            base=msg.get("base", "main"),
+            target=msg.get("target", "archie-code"),
+            target_file=msg.get("target_file"),
+            module=msg.get("module"),
+            progress=_prog,
+        )
+        return {"type": "build_result", **result}
 
     async def _process_chat_message(self, msg: dict, send=None) -> dict:
         content = msg.get("content", "")

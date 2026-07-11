@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // parseEngineMessage previously omitted every coding-surface field, so
 // repo_list/file_tree/file_content/git_diff arrived zero-valued (dead explorer)
@@ -119,5 +123,64 @@ func TestChatBadgeFormat(t *testing.T) {
 	}
 	if got := chatBadge("", "", ""); got != "" {
 		t.Fatalf("empty badge must be empty: %q", got)
+	}
+}
+
+func TestParseEngineMessageToolsList(t *testing.T) {
+	// Task 5 (tool palette): tools_list frame → Tools with name+description.
+	r := parseEngineMessage(map[string]interface{}{
+		"type": "tools_list",
+		"tools": []interface{}{
+			map[string]interface{}{"name": "git_status", "description": "show git status"},
+			map[string]interface{}{"name": "shell_exec", "description": "run a command"},
+		},
+	})
+	if len(r.Tools) != 2 || r.Tools[0].Name != "git_status" || r.Tools[1].Description != "run a command" {
+		t.Fatalf("tools_list not parsed: %+v", r.Tools)
+	}
+}
+
+func TestParseEngineMessageBuildResult(t *testing.T) {
+	// Task 5 (driveable build): build_result carries success/stage/branch/pr_url.
+	ok := parseEngineMessage(map[string]interface{}{
+		"type": "build_result", "success": true, "stage": "done",
+		"branch": "engine/x", "pr_url": "https://gh/pr/9",
+	})
+	if !ok.BuildSuccess || ok.BuildStage != "done" || ok.Branch != "engine/x" || ok.PRURL != "https://gh/pr/9" {
+		t.Fatalf("build_result not parsed: %+v", ok)
+	}
+	fail := parseEngineMessage(map[string]interface{}{
+		"type": "build_result", "success": false, "stage": "test", "error": "2 failed",
+	})
+	if fail.BuildSuccess || fail.BuildStage != "test" || fail.ApplyError != "2 failed" {
+		t.Fatalf("failed build_result not parsed: %+v", fail)
+	}
+}
+
+func TestApplyEditRequiresApproval(t *testing.T) {
+	// Task 5 (apply_edit approval): Ctrl+S stages the edit for confirmation and
+	// does NOT send it until approved; 'n' cancels.
+	m := initialModel("ws://x")
+	m.connected = true
+	m.explorer.CurrentRepo = "/repo"
+	m.explorer.OpenPath = "a.go"
+	m.editing = true
+	m.editor.SetValue("new content")
+
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	mm := nm.(model)
+	if mm.editing {
+		t.Fatal("Ctrl+S should exit edit mode")
+	}
+	if mm.pendingApply == nil {
+		t.Fatal("Ctrl+S must stage a pending apply for approval, not send immediately")
+	}
+	if mm.pendingApply.path != "a.go" || mm.pendingApply.content != "new content" {
+		t.Fatalf("pending apply wrong: %+v", mm.pendingApply)
+	}
+
+	nm2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if nm2.(model).pendingApply != nil {
+		t.Fatal("'n' must cancel/clear the pending apply")
 	}
 }

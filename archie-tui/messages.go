@@ -19,6 +19,13 @@ type EngineResponseMsg struct {
 	Agent string
 	Node  string
 	Model string
+	// Tool palette (Task 5): tools_list frame.
+	Tools []Tool
+	// Driveable build (Task 5): build_result frame.
+	BuildSuccess bool
+	BuildStage   string
+	Branch       string
+	PRURL        string
 	// Platform status fields
 	PlatformHub   string `json:"hub"`
 	PlatformModel string `json:"model"`
@@ -48,6 +55,11 @@ type Repo struct {
 	Name  string `json:"name"`
 	Path  string `json:"path"`
 	Label string `json:"label"`
+}
+
+type Tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type ConnectedMsg struct {
