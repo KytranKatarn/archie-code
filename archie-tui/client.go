@@ -55,7 +55,10 @@ func (c *Client) Send(msg map[string]interface{}) error {
 }
 
 func (c *Client) SendMessage(content string, sessionID string) error {
-	msg := map[string]interface{}{"type": "message", "content": content}
+	// Opt into progress streaming (Task 4): the engine emits intermediate
+	// `progress` frames before the final `response`. Engine-side this is gated on
+	// stream:true, so clients that omit it stay one-shot (backward compat).
+	msg := map[string]interface{}{"type": "message", "content": content, "stream": true}
 	if sessionID != "" {
 		msg["session_id"] = sessionID
 	}

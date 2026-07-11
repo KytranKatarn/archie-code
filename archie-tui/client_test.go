@@ -80,3 +80,38 @@ func TestClientPropagatesDisconnect(t *testing.T) {
 		t.Fatal("disconnect was never propagated — UI would stay 'connected'")
 	}
 }
+
+// Task 4: the REPL opts into progress streaming so the engine emits intermediate
+// frames. The wire frame must carry stream:true (plus the legacy fields), while
+// a plain client that omits it stays one-shot (engine-side backward compat).
+func TestSendMessageOptsIntoStreaming(t *testing.T) {
+	got := make(chan map[string]interface{}, 1)
+	url, srv := startTestWSServer(func(c *websocket.Conn) {
+		var m map[string]interface{}
+		_ = c.ReadJSON(&m)
+		got <- m
+	})
+	defer srv.Close()
+
+	client := NewClient(url)
+	if err := client.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.SendMessage("hello", "s1"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	select {
+	case m := <-got:
+		if m["type"] != "message" || m["content"] != "hello" || m["session_id"] != "s1" {
+			t.Fatalf("unexpected message frame: %+v", m)
+		}
+		if stream, _ := m["stream"].(bool); !stream {
+			t.Fatalf("SendMessage must opt into streaming (stream:true): %+v", m)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("message frame never received")
+	}
+}

@@ -86,3 +86,15 @@ func TestParseEngineMessagePlatformStatus(t *testing.T) {
 		t.Fatalf("platform_status regressed: %+v", p)
 	}
 }
+
+func TestParseEngineMessageProgress(t *testing.T) {
+	// Task 3/4 streaming: a progress frame must expose stage + detail so the REPL
+	// can render intermediate steps before the final response.
+	pr := parseEngineMessage(map[string]interface{}{
+		"type": "progress", "session_id": "s1", "stage": "dispatch",
+		"detail": "chat -> local",
+	})
+	if pr.Type != "progress" || pr.Stage != "dispatch" || pr.Detail != "chat -> local" || pr.SessionID != "s1" {
+		t.Fatalf("progress frame not parsed: %+v", pr)
+	}
+}

@@ -126,6 +126,9 @@ func parseEngineMessage(raw map[string]interface{}) EngineResponseMsg {
 		NodeID:         getString(raw, "node_id"),
 		DispatchTarget: getString(raw, "dispatch_target"),
 		DispatchReason: getString(raw, "dispatch_reason"),
+		// Progress streaming (Task 3/4)
+		Stage:  getString(raw, "stage"),
+		Detail: getString(raw, "detail"),
 		// Coding-surface fields (#4264): file_tree / file_content / git_diff /
 		// apply_result. The shared root/path/error keys are reused across message
 		// types — harmless because Update dispatches on Type first.
@@ -415,6 +418,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case EngineResponseMsg:
 		switch msg.Type {
+		case "progress":
+			// Streamed intermediate step (Task 4): render a subtle progress line
+			// and hold the companion in a working state. The final "response"
+			// frame follows on the same session and replaces this state.
+			if msg.Detail != "" {
+				m.chat.AddMessage("system", "· "+msg.Detail)
+			}
+			m.companion.SetState(views.StateThinking, "working...")
 		case "response":
 			m.chat.AddMessage("assistant", msg.Content)
 			if msg.SessionID != "" {

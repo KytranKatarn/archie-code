@@ -11,6 +11,9 @@ type EngineResponseMsg struct {
 	Skills         []Skill  `json:"skills"`
 	DispatchTarget string   `json:"dispatch_target"`
 	DispatchReason string   `json:"dispatch_reason"`
+	// Progress streaming (Task 3/4): intermediate frames before the final response.
+	Stage  string `json:"stage"`
+	Detail string `json:"detail"`
 	// Platform status fields
 	PlatformHub   string `json:"hub"`
 	PlatformModel string `json:"model"`
