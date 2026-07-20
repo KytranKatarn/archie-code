@@ -25,6 +25,8 @@ from __future__ import annotations
 import json
 import re
 import time
+
+from archie_engine import fix_efficacy
 import uuid
 from dataclasses import dataclass, field
 
@@ -70,6 +72,11 @@ class BuildResult:
     test_output: str = ""              # captured test command output (for build-result reporting)
     module: str | None = None         # target platform Code-Health module, if any (drives reverify)
     reverify: dict | None = None      # loop-closer verdict {modules,fixed,still_open,details}
+    # #5003 fix-efficacy: resolved | still_present | unverified. "unverified" means no
+    # deterministic checker existed for this finding type — NOT that the fix is bad. Kept
+    # distinct from success so "attempted" and "verified effective" are separable metrics.
+    efficacy: str = "unverified"
+    efficacy_detail: str = ""
 
     def fail(self, stage: str, error: str) -> "BuildResult":
         self.stage = stage
@@ -165,6 +172,32 @@ class BuildLoop:
                 return self._done(result.fail("apply", f"{path}: {ar.error}"), start)
             applied.append(path)
         result.files = applied
+
+        # 3b. FIX-EFFICACY GATE (#5003) — re-assert the ORIGINAL finding against the file we
+        # just edited, BEFORE spending a test run and BEFORE opening a PR. Engine PR #2348
+        # passed every test and shipped a diff that did not touch the reported problem at all;
+        # green tests answer "did I break anything", never "did I fix the thing".
+        # FAIL CLOSED only on a PROVEN miss. An UNVERIFIED finding (no deterministic checker —
+        # e.g. the pyflakes codes, which need a dependency the engine container lacks) proceeds,
+        # because blocking those would halt the loop; it is recorded instead so that "attempted"
+        # and "verified effective" stop being the same number.
+        if target_file:
+            # numbered=False is REQUIRED: the default line-number prefixes would inflate every
+            # measured line length and make the check report a miss on every build.
+            rr = await self.tools.execute("file_ops", operation="read", path=target_file, numbered=False)
+            if rr.success:
+                verdict, detail = fix_efficacy.check(task, getattr(rr, "output", "") or "")
+                result.efficacy = verdict
+                result.efficacy_detail = detail
+                await _emit("efficacy", f"{verdict}: {detail}")
+                if verdict == fix_efficacy.STILL_PRESENT:
+                    return self._done(
+                        result.fail("fix_ineffective", f"finding still reproduces after the edit — {detail}"),
+                        start,
+                    )
+            else:
+                result.efficacy = fix_efficacy.UNVERIFIED
+                result.efficacy_detail = f"could not re-read {target_file}: {rr.error}"
 
         await _emit("test", self.test_command)
         # 4. test — deploy ONLY on green
