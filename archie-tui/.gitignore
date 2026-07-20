@@ -1,2 +1,7 @@
 archie-code
 *.exe
+
+# A bare `go build` (no -o) names the binary after the directory. The canonical
+# artifact is `archie-code` (Makefile BINARY_NAME, README, install.sh) — this catches
+# the mis-named one so a 9.4 MB build artifact stops showing up as untracked.
+/archie-tui
