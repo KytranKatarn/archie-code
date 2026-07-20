@@ -298,7 +298,11 @@ class HubConnector:
         )
 
     async def get_repair_issues(
-        self, status: str = "open", limit: int = 50, auto_fixable: bool = True
+        self,
+        status: str = "open",
+        limit: int = 50,
+        auto_fixable: bool = True,
+        path_prefixes: list[str] | None = None,
     ) -> dict:
         """Read the open Code-Health issue work queue (#4259).
         GET /api/internal/repair/issues?status=&limit=[&auto_fixable=] → {success, issues[]}.
@@ -317,14 +321,23 @@ class HubConnector:
         An older hub ignores the unknown query param, so this degrades safely to
         the previous unfiltered behaviour rather than erroring.
         """
-        return await self.get(
-            "/api/internal/repair/issues",
-            params={
-                "status": status,
-                "limit": str(limit),
-                "auto_fixable": "true" if auto_fixable else "false",
-            },
-        )
+        params = {
+            "status": status,
+            "limit": str(limit),
+            "auto_fixable": "true" if auto_fixable else "false",
+        }
+        if path_prefixes:
+            # Server-side scope filter (#5002). We send OUR allowlist so there is one
+            # source of truth (scope_guard.PLATFORM_SCOPE) rather than the hub keeping
+            # a second copy that can drift. It only NARROWS results — writes remain
+            # gated by scope_guard here.
+            #
+            # Without it the hub returns a severity-ordered window and we filter by
+            # path locally: measured 2026-07-19 the first in-scope issue ranked 744
+            # against a fetch limit of 200, so every cycle no-opped. With it, all 12
+            # in-scope issues come back inside the default limit.
+            params["path_prefixes"] = ",".join(p for p in path_prefixes if p)
+        return await self.get("/api/internal/repair/issues", params=params)
 
     async def dhq_complete(self, prompt: str, system_prompt: str | None = None,
                            capability: str | None = None,
