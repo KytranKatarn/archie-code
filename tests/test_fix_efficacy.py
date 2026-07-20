@@ -62,10 +62,17 @@ def test_boundary_at_the_limit_is_not_a_violation():
 
 
 def test_unknown_finding_type_is_unverified_not_blocked():
-    """The queue is dominated by pyflakes codes this slice cannot check (no pyflakes in the
-    engine container). Those MUST pass through — blocking them would halt the build loop."""
-    task = _format_issue_task({"message": "F401 'os' imported but unused", "severity": "low"}, "a/b.py")
-    verdict, detail = fix_efficacy.check(task, "import os\n")
+    """A finding NO checker recognises must pass through — blocking it would halt the loop.
+
+    UPDATED 2026-07-20: this used F401 as its example of "uncheckable". Since pyflakes became
+    a runtime dependency, F401 IS checkable (see the pyflakes tests below), so the example
+    moved to a genuinely unrecognised detector. The GUARANTEE pinned here is unchanged and is
+    the point: no checker -> UNVERIFIED -> never fails closed.
+    """
+    task = _format_issue_task(
+        {"message": "CYCLOMATIC_COMPLEXITY function too complex (18)", "severity": "low"}, "a/b.py"
+    )
+    verdict, detail = fix_efficacy.check(task, "def f():\n    return 1\n")
     assert verdict == fix_efficacy.UNVERIFIED
     assert verdict != fix_efficacy.STILL_PRESENT, "an uncheckable finding must not fail closed"
 
@@ -130,3 +137,61 @@ def test_unknown_finding_type_is_NOT_stale(tmp_path):
     (tmp_path / "f.py").write_text("import os\n")
     task = _format_issue_task({"message": "F401 'os' imported but unused", "severity": "low"}, "f.py")
     assert Engine._finding_is_stale(_selfish(tmp_path), task, "f.py") is False
+
+
+# --- pyflakes-backed checkers (#5003 slice 2) ----------------------------------------------
+# 1327 of 2230 open findings were UNVERIFIED because the only checker was line-length, and
+# the queue is dominated by F401/F841/F821. pyflakes is now a runtime dependency so those
+# findings can be re-asserted for real.
+
+import pytest
+
+pyflakes = pytest.importorskip("pyflakes", reason="pyflakes is a runtime dep of the engine image")
+
+
+def _t(message):
+    return _format_issue_task({"message": message, "severity": "low"}, "a.py")
+
+
+@pytest.mark.parametrize(
+    "message,broken_src,fixed_src",
+    [
+        ("F401 'os' imported but unused", "import os\n", "x = 1\n"),
+        (
+            "F841 local variable 'y' is assigned to but never used",
+            "def f():\n    y = 1\n",
+            "def f():\n    return 1\n",
+        ),
+        ("F821 undefined name 'zzz'", "print(zzz)\n", "zzz = 1\nprint(zzz)\n"),
+    ],
+)
+def test_pyflakes_finding_round_trip(message, broken_src, fixed_src):
+    """Each code must report still_present on the unfixed source and resolved on the fixed one."""
+    assert fix_efficacy.check(_t(message), broken_src)[0] == fix_efficacy.STILL_PRESENT
+    assert fix_efficacy.check(_t(message), fixed_src)[0] == fix_efficacy.RESOLVED
+
+
+def test_syntax_error_is_unverified_never_resolved():
+    """A file that does not parse makes pyflakes emit ONLY a syntax error. That must not read
+    as 'the finding is gone' — it would let a broken edit through the gate as a clean fix."""
+    v, detail = fix_efficacy.check(_t("F401 'os' imported but unused"), "def broken(\n")
+    assert v == fix_efficacy.UNVERIFIED
+    assert "parse" in detail or "unavailable" in detail
+
+
+def test_bare_pyflakes_wording_without_a_code_is_recognised():
+    """Some findings arrive with no F-code, just pyflakes' own text."""
+    assert fix_efficacy.check(_t("'os' imported but unused"), "import os\n")[0] == fix_efficacy.STILL_PRESENT
+
+
+def test_unrelated_pyflakes_finding_does_not_mask_a_fix():
+    """Only the ORIGINAL finding matters. An unrelated warning elsewhere must not make a
+    genuinely-fixed finding look unresolved."""
+    src = "import sys\n\n\ndef f():\n    return 1\n"  # F401 on sys, but the 'os' finding is gone
+    assert fix_efficacy.check(_t("F401 'os' imported but unused"), src)[0] == fix_efficacy.RESOLVED
+
+
+def test_line_length_checker_still_wins_for_its_own_findings():
+    """Checker ordering: a line-length message must not fall through to pyflakes."""
+    assert fix_efficacy.check(TASK_7844, "x" * 124)[0] == fix_efficacy.STILL_PRESENT
+    assert fix_efficacy.check(TASK_7844, "x" * 80)[0] == fix_efficacy.RESOLVED

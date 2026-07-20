@@ -15,6 +15,11 @@ dependencies = [
     "aiohttp>=3.9.0",
     "pyyaml>=6.0",
     "psutil>=5.9",
+    # RUNTIME, not a test tool: the #5003 fix-efficacy gate re-asserts pyflakes findings
+    # (F401/F841/F821/...) against the post-edit file during every autonomous build, and the
+    # #5004 stale-skip uses the same checker at pick time. Without it those findings return
+    # UNVERIFIED — 1327 of 2230 open issues, measured 2026-07-20.
+    "pyflakes>=3.1",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

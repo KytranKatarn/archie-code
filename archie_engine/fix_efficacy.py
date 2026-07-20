@@ -23,11 +23,25 @@ blocking them would halt the build loop entirely. It is reported so that "attemp
 "verified effective" stop being the same number.
 """
 
+import io
 import re
 
 RESOLVED = "resolved"
 STILL_PRESENT = "still_present"
 UNVERIFIED = "unverified"
+
+# flake8-style code Repair Bay stores on a pyflakes finding ("F401 'os' imported but unused").
+_PYFLAKES_CODE_RE = re.compile(r"\b(?:F\d{3}|PYFLAKES)\b", re.IGNORECASE)
+
+# Findings sometimes arrive without a code — recognise pyflakes' own wording too.
+_PYFLAKES_PHRASES = (
+    "imported but unused",
+    "assigned to but never used",
+    "undefined name",
+    "redefinition of unused",
+    "f-string is missing placeholders",
+    "unable to detect undefined names",
+)
 
 # "Line exceeds 120 characters (124)" / "line exceeds 120 chars"
 _LINE_LEN_RE = re.compile(r"line\s+exceeds\s+(\d+)\s+char", re.IGNORECASE)
@@ -76,8 +90,69 @@ def _check_line_length(message: str, file_text: str):
     return STILL_PRESENT, f"still exceeds {limit} chars: {shown}"
 
 
+def _pyflakes_findings(file_text: str):
+    """(messages, ok) — pyflakes' own text for this source.
+
+    ok is False when the source could not be analysed at all (pyflakes missing, or the file
+    does not parse). A syntax error must NEVER read as "the finding is gone" — pyflakes emits
+    nothing but the syntax error itself, which would otherwise look like a clean file.
+    """
+    try:
+        from pyflakes.api import check as pyflakes_check
+        from pyflakes.reporter import Reporter
+    except ImportError:
+        return [], False
+
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        pyflakes_check(file_text or "", "target", Reporter(out, err))
+    except Exception:
+        return [], False
+    if err.getvalue().strip():  # syntax error / unparseable
+        return [], False
+    return out.getvalue().splitlines(), True
+
+
+def _needle_from_message(message: str) -> str:
+    """Strip the flake8 code prefix, leaving pyflakes' own wording.
+
+    Repair Bay stores "F401 'os' imported but unused"; pyflakes itself emits
+    "target:1:1 'os' imported but unused" — no code. Matching on the descriptive tail is
+    what makes the two comparable.
+    """
+    text = (message or "").strip()
+    text = _PYFLAKES_CODE_RE.sub("", text, count=1).strip()
+    return text.strip(" -:")
+
+
+def _check_pyflakes(message: str, file_text: str):
+    """Re-assert a pyflakes finding (F401/F841/F821/...) by re-running pyflakes.
+
+    Returns (verdict, detail) or None when the message is not a pyflakes finding.
+
+    Every uncertainty returns UNVERIFIED rather than a verdict: pyflakes absent, source
+    unparseable, or a message with no comparable wording left after stripping the code.
+    """
+    msg = message or ""
+    if not _PYFLAKES_CODE_RE.search(msg) and not any(p in msg.lower() for p in _PYFLAKES_PHRASES):
+        return None
+
+    needle = _needle_from_message(msg)
+    if len(needle) < 8:  # nothing distinctive left to compare
+        return UNVERIFIED, f"no comparable pyflakes wording in: {msg[:60]}"
+
+    findings, ok = _pyflakes_findings(file_text)
+    if not ok:
+        return UNVERIFIED, "pyflakes unavailable or source does not parse"
+
+    still = [ln for ln in findings if needle in ln]
+    if still:
+        return STILL_PRESENT, f"pyflakes still reports: {still[0][:100]}"
+    return RESOLVED, f"pyflakes no longer reports: {needle[:80]}"
+
+
 # Ordered; the first checker that recognises the message wins.
-_CHECKERS = (_check_line_length,)
+_CHECKERS = (_check_line_length, _check_pyflakes)
 
 
 def check(task: str, file_text: str):
