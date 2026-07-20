@@ -707,14 +707,43 @@ class Engine:
 
         _sev = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
         in_scope.sort(key=lambda i: -_sev.get((i.get("severity") or "").lower(), 0))
-        picked = in_scope[0]
+
+        # #5004: walk the queue in severity order and skip findings that PROVABLY no longer
+        # reproduce, instead of blindly building the top one. A stale pick costs a full 6h
+        # cycle (autopull is 6-hourly and defers under GPU pressure) to discover there was
+        # nothing to fix. Stale ones are still recorded as attempted so they rotate out.
+        picked = None
+        task = None
+        stale_skipped: list = []
+        for cand in in_scope:
+            cand_fp = cand.get("file_path")
+            cand_task = _format_issue_task(cand, cand_fp)
+            if self._finding_is_stale(cand_task, cand_fp):
+                stale_skipped.append(cand.get("id"))
+                if tracker:
+                    tracker.record(cand.get("id"))
+                logger.info(
+                    "[pull_and_build] issue #%s is STALE (%s) — finding no longer reproduces; skipping",
+                    cand.get("id"), cand_fp,
+                )
+                continue
+            picked = cand
+            task = cand_task
+            break
+
+        if picked is None:
+            logger.info(
+                "[pull_and_build] every in-scope issue is stale (%d skipped) — no-op", len(stale_skipped)
+            )
+            return {"success": True, "skipped": True, "reason": "all in-scope issues stale",
+                    "stale_skipped": stale_skipped, "queue_size": len(issues)}
+
         # Record the attempt BEFORE building — so even a failed build rotates the loop
         # to a different issue next cycle (instead of retrying the same failing one).
         if tracker:
             tracker.record(picked.get("id"))
         fp = picked["file_path"]
         module = _module_from_path(fp)
-        task = _format_issue_task(picked, fp)
         logger.info(
             "[pull_and_build] building issue #%s (%s, module=%s, sev=%s) → archie-platform",
             picked.get("id"), fp, module, picked.get("severity"),
@@ -722,7 +751,32 @@ class Engine:
         result = await self.run_build(task, target="archie-platform", module=module, target_file=fp)
         result["issue_id"] = picked.get("id")
         result["file_path"] = fp
+        if stale_skipped:
+            result["stale_skipped"] = stale_skipped
         return result
+
+    def _finding_is_stale(self, task: str, file_path: str) -> bool:
+        """True only when the finding PROVABLY no longer reproduces in the current source (#5004).
+
+        Issue #7846 ("doc/routes.py line 178 exceeds 120 characters", created 2026-05-12) was
+        picked up on 2026-07-19 and burned a whole autonomous build cycle discovering that line
+        178 is now 49 characters. Autopull runs every 6h and defers under GPU pressure, so one
+        wasted pick can cost 6-12h of real throughput.
+
+        Fails toward BUILDING on every doubt — a false "stale" silently skips real work, which
+        is far worse than spending one cycle:
+          * file unreadable       -> not stale
+          * content truncated     -> not stale (a long line could sit past the byte cap)
+          * no deterministic checker -> not stale (fix_efficacy returns UNVERIFIED)
+        """
+        from archie_engine import fix_efficacy
+        from archie_engine.workspace_ops import read_file
+
+        res = read_file(self.config.platform_workspace, file_path)
+        if res.get("error") or res.get("truncated"):
+            return False
+        verdict, _detail = fix_efficacy.check(task, res.get("content", "") or "")
+        return verdict == fix_efficacy.RESOLVED
 
     async def _handle_apply_edit(self, msg: dict, send=None) -> dict:
         """Approval-gated write (Task 5): stash the edit + emit an approval_request;

@@ -95,3 +95,38 @@ def test_line_numbered_input_would_break_the_check():
 
     # SAME underlying file, measured with prefixes -> a FALSE miss that would block the build.
     assert fix_efficacy.check(TASK_7844, numbered)[0] == fix_efficacy.STILL_PRESENT
+
+
+# --- Engine._finding_is_stale: the guards that must fail TOWARD building (#5004) -----------
+# A false "stale" silently skips real work — strictly worse than spending one build cycle.
+# These call the real helper unbound with a minimal self, so the guards are exercised for real.
+
+import types
+
+from archie_engine.engine import Engine
+
+
+def _selfish(tmp_path):
+    return types.SimpleNamespace(config=types.SimpleNamespace(platform_workspace=str(tmp_path)))
+
+
+def test_stale_when_finding_provably_gone(tmp_path):
+    (tmp_path / "f.py").write_text("short line\n")
+    assert Engine._finding_is_stale(_selfish(tmp_path), TASK_7844, "f.py") is True
+
+
+def test_not_stale_when_finding_still_present(tmp_path):
+    (tmp_path / "f.py").write_text("x" * 124 + "\n")
+    assert Engine._finding_is_stale(_selfish(tmp_path), TASK_7844, "f.py") is False
+
+
+def test_missing_file_is_NOT_stale(tmp_path):
+    """Unreadable path -> we know nothing -> build. Never skip on ignorance."""
+    assert Engine._finding_is_stale(_selfish(tmp_path), TASK_7844, "does_not_exist.py") is False
+
+
+def test_unknown_finding_type_is_NOT_stale(tmp_path):
+    """No deterministic checker (pyflakes codes) -> UNVERIFIED -> must still build."""
+    (tmp_path / "f.py").write_text("import os\n")
+    task = _format_issue_task({"message": "F401 'os' imported but unused", "severity": "low"}, "f.py")
+    assert Engine._finding_is_stale(_selfish(tmp_path), task, "f.py") is False
