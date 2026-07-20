@@ -679,7 +679,14 @@ class Engine:
             return {"success": False, "error": "no hub connector"}
         if limit is None:
             limit = getattr(getattr(self, "config", None), "autopull_fetch_limit", 200)
-        resp = await self.hub_connector.get_repair_issues(status="open", limit=limit)
+        # Ask the hub to pre-filter to OUR scope (#5002). The local is_in_scope()
+        # pass below STILL runs — server-side filtering is an efficiency fix, not a
+        # security boundary; scope_guard remains the enforcement point.
+        resp = await self.hub_connector.get_repair_issues(
+            status="open",
+            limit=limit,
+            path_prefixes=list(PLATFORM_SCOPE.get("allowed_paths") or []),
+        )
         if not isinstance(resp, dict) or "error" in resp:
             return {"success": False, "error": f"queue read failed: {resp}"}
         issues = resp.get("issues", []) or []
