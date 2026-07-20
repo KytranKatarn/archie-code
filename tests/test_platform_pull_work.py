@@ -51,7 +51,7 @@ class _Conn:
         self._i = issues
         self._error = error
 
-    async def get_repair_issues(self, status="open", limit=100):
+    async def get_repair_issues(self, status="open", limit=100, auto_fixable=True, path_prefixes=None):
         if self._error:
             return {"error": "boom"}
         return {"success": True, "issues": self._i}
@@ -178,7 +178,7 @@ class _LimitRecordingConn:
     def __init__(self):
         self.captured_limit = None
 
-    async def get_repair_issues(self, status="open", limit=100):
+    async def get_repair_issues(self, status="open", limit=100, auto_fixable=True, path_prefixes=None):
         self.captured_limit = limit
         return {"success": True, "issues": [
             {"id": 9, "file_path": "platform_v2/tools/doc/routes.py", "message": "m", "severity": "low"},
