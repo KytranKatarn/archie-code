@@ -297,13 +297,33 @@ class HubConnector:
             params={"status": status} if status else None,
         )
 
-    async def get_repair_issues(self, status: str = "open", limit: int = 50) -> dict:
+    async def get_repair_issues(
+        self, status: str = "open", limit: int = 50, auto_fixable: bool = True
+    ) -> dict:
         """Read the open Code-Health issue work queue (#4259).
-        GET /api/internal/repair/issues?status=&limit= → {success, issues[]}.
+        GET /api/internal/repair/issues?status=&limit=[&auto_fixable=] → {success, issues[]}.
+
+        auto_fixable defaults to True because the engine IS an automated fixer:
+        the hub drops classes that are unsafe or pointless to auto-fix (#5000).
+
+        Why this matters — pull_and_build picks the HIGHEST-SEVERITY in-scope
+        issue, and measured 2026-07-19 against 2,230 open issues, 276 of the 286
+        open `security/high` findings (96%) were "Potential SQL injection
+        vulnerability". That is the same class audit_pipeline already refuses to
+        auto-fix because generated fixes were 100% garbage (KB #282665). Without
+        this flag the loop draws that class nearly every 6-hourly cycle and burns
+        a GPU-gated build slot on it.
+
+        An older hub ignores the unknown query param, so this degrades safely to
+        the previous unfiltered behaviour rather than erroring.
         """
         return await self.get(
             "/api/internal/repair/issues",
-            params={"status": status, "limit": str(limit)},
+            params={
+                "status": status,
+                "limit": str(limit),
+                "auto_fixable": "true" if auto_fixable else "false",
+            },
         )
 
     async def dhq_complete(self, prompt: str, system_prompt: str | None = None,
