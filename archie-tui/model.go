@@ -27,6 +27,7 @@ type model struct {
 	skillPicker  *views.SkillPicker
 	toolPalette  *views.ToolPalette
 	palette      *Palette
+	skillBridge  *SkillBridge // #5333 platform skill palette (Ctrl+K)
 	companion    *views.CompanionView
 	statusPanel  *views.StatusPanel
 	explorer     *views.FileExplorer
@@ -61,6 +62,7 @@ func initialModel(wsURL string) model {
 		skillPicker: views.NewSkillPicker(),
 		toolPalette: views.NewToolPalette(),
 		palette:     NewPalette(nil),
+		skillBridge: NewSkillBridge(),
 		companion:   views.NewCompanionView(),
 		statusPanel: views.NewStatusPanel(),
 		explorer:    views.NewFileExplorer(),
@@ -188,6 +190,37 @@ func parseEngineMessage(raw map[string]interface{}) EngineResponseMsg {
 			}
 		}
 	}
+
+	// #5333 platform_skills: skills: [{capability, kind, home_department,
+	// director_agent, description}]. GATED ON TYPE because this frame reuses the
+	// key "skills" with a DIFFERENT shape than skills_list -- parsing both
+	// unconditionally fills Skills with empty-named junk rows.
+	if resp.Type == "platform_skills" {
+		resp.Skills = nil
+		if arr, ok := raw["skills"].([]interface{}); ok {
+			for _, it := range arr {
+				if pm, ok := it.(map[string]interface{}); ok {
+					resp.PlatformSkills = append(resp.PlatformSkills, PlatformSkill{
+						Capability:     getString(pm, "capability"),
+						Kind:           getString(pm, "kind"),
+						HomeDepartment: getString(pm, "home_department"),
+						DirectorAgent:  getString(pm, "director_agent"),
+						Description:    getString(pm, "description"),
+					})
+				}
+			}
+		}
+		resp.KnownToolCount = getInt(raw, "known_tool_count")
+		resp.LLMCount = getInt(raw, "llm_count")
+	}
+
+	// #5333 platform_skill_result / platform_skill_status.
+	resp.TaskID = getInt(raw, "task_id")
+	resp.TaskStatus = getString(raw, "status")
+	resp.Capability = getString(raw, "capability")
+	resp.WorkNotes = getString(raw, "work_notes")
+	// The hub is fail-soft: any of the three can answer {"error": ...}.
+	resp.Error = getString(raw, "error")
 
 	// tools_list: tools: [{name, description}] (Task 5)
 	if toolsRaw, ok := raw["tools"].([]interface{}); ok {
@@ -356,6 +389,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// #5333: while the platform-skill palette is open it owns every key.
+		// One intercept instead of a branch inside each of enter/esc/up/down/
+		// backspace -- in an 886-line Update that is the difference between a
+		// reviewable change and five chances to miss a case. Ctrl+C still quits
+		// (handled below) because the palette closes on Esc, not on exit.
+		if m.skillBridge.Open && msg.String() != "ctrl+c" && msg.String() != "ctrl+d" {
+			return m.skillBridgeKey(msg.String())
+		}
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
 			m.client.Close()
@@ -433,6 +474,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.palette.SetFilter("")
 				return m, nil
 			}
+		case "ctrl+k":
+			// #5333 platform skills. Distinct from "/" (the engine's OWN skills)
+			// and Ctrl+T (MCP tools): these dispatch through DHQ onto the cluster.
+			m.skillBridge.Toggle()
+			if m.skillBridge.Open && !m.skillBridge.Requested && m.connected {
+				m.skillBridge.Requested = true
+				_ = m.client.Send(map[string]interface{}{"type": "platform_skills"})
+			}
+			return m, nil
 		case "ctrl+t":
 			m.toolPalette.Visible = !m.toolPalette.Visible
 			if m.toolPalette.Visible {
@@ -625,6 +675,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				titems = append(titems, views.ToolItem{Name: tl.Name, Description: tl.Description})
 			}
 			m.toolPalette.Tools = titems
+		case "platform_skills":
+			// #5333: the hub's registry. An error still marks it Loaded so the
+			// overlay shows the reason instead of spinning on "Loading…".
+			m.skillBridge.SetSkills(msg.PlatformSkills)
+			if msg.Error != "" {
+				m.skillBridge.Status = "registry error: " + msg.Error
+			}
+		case "platform_skill_result":
+			if msg.Error != "" {
+				m.skillBridge.Status = "dispatch failed: " + msg.Error
+			} else {
+				m.skillBridge.LastTaskID = msg.TaskID
+				m.skillBridge.Status = fmt.Sprintf("dispatched -> task #%d (%s)", msg.TaskID, msg.TaskStatus)
+				m.chat.AddMessage("system", fmt.Sprintf(
+					"Platform skill dispatched via DHQ: task #%d (%s). Ctrl+K then Enter on the same row polls it.",
+					msg.TaskID, msg.TaskStatus))
+			}
+		case "platform_skill_status":
+			if msg.Error != "" {
+				m.skillBridge.Status = "status error: " + msg.Error
+			} else {
+				m.skillBridge.Status = fmt.Sprintf("task #%d: %s", msg.TaskID, msg.TaskStatus)
+				if msg.WorkNotes != "" {
+					m.chat.AddMessage("system", msg.WorkNotes)
+				}
+			}
 		case "build_result":
 			if msg.BuildSuccess {
 				pr := msg.PRURL
@@ -827,6 +903,12 @@ func (m model) View() string {
 	}
 
 	// Command palette overlay (Task 5)
+	// #5333 platform skill palette overlay (Ctrl+K)
+	var skillBridgeSection string
+	if m.skillBridge.Open {
+		skillBridgeSection = m.skillBridge.Render(m.width)
+	}
+
 	var paletteSection string
 	if m.palette.Open {
 		paletteSection = m.palette.Render(m.width)
@@ -859,6 +941,9 @@ func (m model) View() string {
 	}
 	if toolSection != "" {
 		sections = append(sections, toolSection)
+	}
+	if skillBridgeSection != "" {
+		sections = append(sections, skillBridgeSection)
 	}
 	if paletteSection != "" {
 		sections = append(sections, paletteSection)

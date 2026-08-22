@@ -45,6 +45,39 @@ type EngineResponseMsg struct {
 	ApplyError string `json:"error"`
 	// approval_request (Task 5): kind + path(FilePath) + diff; SessionID reused.
 	Kind string `json:"kind"`
+	// --- #5333 platform skill bridge -------------------------------------
+	// platform_skills: the hub's invokable-skills registry. Named distinctly from
+	// Skills (the engine's OWN local skills) -- they are different registries and
+	// collapsing them would hide which side of the mesh a selection runs on.
+	// NOTE the deliberate `json:"-"`: the hub's registry frame also uses the key
+	// "skills", which would COLLIDE with Skills above -- and Go drops BOTH fields
+	// on a duplicate json tag, silently. Decoding here is manual
+	// (parseEngineMessage reads a map), so the tag is unused either way; keeping
+	// it "-" means a future switch to json.Unmarshal cannot quietly empty both.
+	PlatformSkills []PlatformSkill `json:"-"`
+	KnownToolCount int             `json:"known_tool_count"`
+	LLMCount       int             `json:"llm_count"`
+	// platform_skill_result / platform_skill_status
+	TaskID     int    `json:"task_id"`
+	TaskStatus string `json:"status"`
+	Capability string `json:"capability"`
+	WorkNotes  string `json:"work_notes"`
+	// Error carries a fail-soft hub error ({"error": ...}) for any of the three.
+	// `json:"-"` for the same reason as PlatformSkills: "error" is already
+	// claimed by ApplyError above, and a duplicate tag makes Go drop BOTH.
+	// go vet catches this one -- keep it that way.
+	Error string `json:"-"`
+}
+
+// PlatformSkill is one entry in the hub's invokable-skills registry (#5333).
+// kind is "known_tool" (runs directly, no LLM) or "llm" (routed via
+// CAPABILITY_DEPARTMENT_MAP to a department director).
+type PlatformSkill struct {
+	Capability     string `json:"capability"`
+	Kind           string `json:"kind"`
+	HomeDepartment string `json:"home_department"`
+	DirectorAgent  string `json:"director_agent"`
+	Description    string `json:"description"`
 }
 
 type Skill struct {
