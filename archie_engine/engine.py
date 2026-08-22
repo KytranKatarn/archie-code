@@ -425,6 +425,33 @@ class Engine:
         if msg_type == "apply_edit":
             return await self._handle_apply_edit(msg, send=send)
 
+        # --- #5333 skill bridge: the PLATFORM registry (not our local skills) ------
+        # `list_skills` above returns the engine's OWN skills. These three proxy the
+        # hub's invokable-skills registry so the TUI palette can list and fire the
+        # same work Claude fires, attributed to delegation_source='tui'. Every call
+        # is fail-soft: a hub outage returns {"error": ...}, never an exception,
+        # because raising here would drop the websocket and take the TUI with it.
+        if msg_type == "platform_skills":
+            from archie_engine.platform_skills import list_platform_skills
+
+            return {"type": "platform_skills", **await list_platform_skills()}
+
+        if msg_type == "platform_skill_invoke":
+            from archie_engine.platform_skills import invoke_platform_skill
+
+            result = await invoke_platform_skill(
+                capability=msg.get("capability", ""),
+                reason=msg.get("reason", ""),
+                args=msg.get("args") or {},
+                priority=int(msg.get("priority") or 5),
+            )
+            return {"type": "platform_skill_result", **result}
+
+        if msg_type == "platform_skill_status":
+            from archie_engine.platform_skills import platform_skill_status
+
+            return {"type": "platform_skill_status", **await platform_skill_status(msg.get("task_id"))}
+
         if msg_type == "approval":
             return await self._handle_approval(msg)
 
