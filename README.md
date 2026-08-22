@@ -2,7 +2,7 @@
 
 **AI-powered terminal development tool with LCARS-themed interface.**
 
-ARCHIE Code CLI is a local-first coding assistant that runs on your machine with Ollama. Optional hub connectivity unlocks 107 AI agents, 18,000+ knowledge base entries, and fleet-wide model orchestration.
+A.R.C.H.I.E. Code CLI is a local-first coding assistant that runs on your machine with Ollama. Optional hub connectivity unlocks 107 AI agents, 18,000+ knowledge base entries, and fleet-wide model orchestration.
 
 ## Install
 
@@ -34,7 +34,7 @@ archie-code
 
 - **6 Built-in Skills** — `/commit`, `/review`, `/explain`, `/debug`, `/refactor`, `/test`
 - **Local-First** — Runs entirely on your machine with Ollama
-- **Hub Connectivity** — Optional connection to ARCHIE platform for 107 agents + 18K KB
+- **Hub Connectivity** — Optional connection to A.R.C.H.I.E. platform for 107 agents + 18K KB
 - **Claude Collaboration** — MCP server exposes tools to Claude CLI
 - **LCARS Theme** — Sci-fi terminal interface with Bubble Tea
 - **Custom Skills** — Create your own slash commands as markdown files
@@ -55,7 +55,7 @@ archie-code
                                    └────────┬───────────┘
                                             │ REST API
                                    ┌────────▼───────────┐
-                                   │  ARCHIE Hub        │
+                                   │  A.R.C.H.I.E. Hub  │
                                    │  (optional)        │
                                    │  107 agents, 18K KB │
                                    └────────────────────┘
@@ -77,7 +77,7 @@ archie-code
 
 ## Comparison
 
-| | ARCHIE Code | Claude Code | Cursor | Copilot CLI |
+| | A.R.C.H.I.E. Code | Claude Code | Cursor | Copilot CLI |
 |---|---|---|---|---|
 | Local-first | Yes | No | No | No |
 | Open source | Apache 2.0 | No | No | No |
