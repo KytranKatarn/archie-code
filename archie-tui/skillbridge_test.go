@@ -127,3 +127,23 @@ func contains(hay, needle string) bool {
 		return false
 	})()
 }
+
+// #5959 — found by a live DOM drive of the cockpit, which shares this filter logic.
+// A human types "forge", not "F.O.R.G.E.". The original test searched WITH the dots,
+// so it passed while the real filter returned zero rows.
+func TestDirectorFilterMatchesTheUndottedName(t *testing.T) {
+	s := NewSkillBridge()
+	s.SetSkills(sample())
+
+	for _, typed := range []string{"forge", "FORGE", "f.o.r.g.e.", "F.O.R.G.E."} {
+		s.SetFilter(typed)
+		got := s.Visible()
+		if len(got) != 1 || got[0].Capability != "code_review" {
+			t.Fatalf("typing %q must find F.O.R.G.E.'s row, got %v", typed, got)
+		}
+	}
+	s.SetFilter("codex")
+	if got := s.Visible(); len(got) != 1 || got[0].Capability != "documentation" {
+		t.Fatalf("typing \"codex\" must find C.O.D.E.X.'s row, got %v", got)
+	}
+}

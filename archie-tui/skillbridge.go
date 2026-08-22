@@ -36,6 +36,9 @@ type SkillBridge struct {
 	LastTaskID int
 }
 
+// dedot strips the dots from a branded agent name so "forge" matches "F.O.R.G.E.".
+func dedot(s string) string { return strings.ReplaceAll(s, ".", "") }
+
 func NewSkillBridge() *SkillBridge { return &SkillBridge{} }
 
 // SetSkills replaces the registry and clamps the selection.
@@ -60,11 +63,18 @@ func (s *SkillBridge) Visible() []PlatformSkill {
 		return s.skills
 	}
 	f := strings.ToLower(s.filter)
+	// Agent names are DOTTED (F.O.R.G.E., C.O.D.E.X.) and a human types "forge",
+	// so the director is matched with dots stripped from BOTH sides. Without this
+	// the filter silently returns nothing while the row visibly shows that
+	// director -- the same trap as .claude/rules/database.md, where ILIKE
+	// '%HAVEN%' never matches 'H.A.V.E.N.'. Caught live in the cockpit (#5959);
+	// the original unit tests missed it because they searched WITH the dots.
+	fd := dedot(f)
 	var out []PlatformSkill
 	for _, k := range s.skills {
 		if strings.Contains(strings.ToLower(k.Capability), f) ||
 			strings.Contains(strings.ToLower(k.HomeDepartment), f) ||
-			strings.Contains(strings.ToLower(k.DirectorAgent), f) {
+			strings.Contains(dedot(strings.ToLower(k.DirectorAgent)), fd) {
 			out = append(out, k)
 		}
 	}
