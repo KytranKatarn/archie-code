@@ -16,8 +16,8 @@ Or manually:
 # Python engine
 pip install archie-engine
 
-# Go TUI (build from source)
-cd archie-tui && go build -o archie-code .
+# Go TUI (build from source, and put it on PATH as `archie-code`)
+cd archie-tui && make install
 ```
 
 ## Quick Start
@@ -29,6 +29,22 @@ python -m archie_engine
 # 2. Launch the TUI (in another terminal)
 archie-code
 ```
+
+`make install` symlinks the binary onto `PATH`, so a later `make build` updates the
+`archie-code` command in place. Plain `make build` leaves the binary in the source
+tree, where Quick Start's `archie-code` will not resolve.
+
+### Driving a remote engine
+
+The engine binds `127.0.0.1` by default (`ARCHIE_WS_HOST`) and its WebSocket has **no
+authentication** — it is loopback-only on purpose. To use the TUI against an engine on
+another host, forward the port rather than widening the bind:
+
+```bash
+ssh -N -L 9090:127.0.0.1:9090 you@engine-host   # then run archie-code as usual
+```
+
+Point it somewhere else with `archie-code -url ws://host:9090`.
 
 ## Features
 
