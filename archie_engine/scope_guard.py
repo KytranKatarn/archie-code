@@ -85,6 +85,20 @@ PLATFORM_SCOPE: dict = {
         # governed (decision #953: safety properties are universal).
         "*agent_service.py",
         "*department_dispatcher.py",
+        # ...and the MERGE-governance half of that kernel. Lane 3 is bounded by
+        # PROCESS (manifest + PR + F.O.R.G.E. + window-scoped merge), so the code
+        # IMPLEMENTING that process is precisely what it must not rewrite.
+        # github_service holds merge_pr/_automerge_governance_ok/verdict_refusal;
+        # pr_review_service holds merge_state/verdict_is_approved/classify_pr_tier.
+        "*repair_bay/services/github_service.py",
+        "*repair_bay/services/pr_review_service.py",
+        # The pre-commit guardrail enforcing the agent single-writer rule.
+        "scripts/check_agent_single_writer.py",
+        # Lane 2's own harness and sandbox wrapper — cross-lane authority.
+        "scripts/agents/*",
+        # The single canonical retention pruner: its RETENTION dict is the source
+        # of truth for every backup tier, including the off-site DR copies.
+        "scripts/backup/*",
         # Real production data; excluded until they have DB isolation.
         "platform_v2/tools/media_studio/*",
         "platform_v2/tools/game_studio/*",

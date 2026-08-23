@@ -48,3 +48,29 @@ def test_excluded_high_risk_modules_still_blocked():
               "platform_v2/tools/game_studio/routes.py",
               "platform_v2/tools/media_hub/routes.py"):
         assert not is_in_scope(p, PLATFORM_SCOPE), p
+
+
+def test_the_merge_gate_stays_blocked():
+    """The dispatch kernel is not the only kernel.
+
+    Lane 3 is bounded by PROCESS -- manifest + PR + F.O.R.G.E. + window-scoped
+    merge -- so the code IMPLEMENTING that process is exactly what it must not be
+    able to rewrite. Same principle as the dispatch kernel, applied to the half
+    that actually binds this lane.
+    """
+    for p in ("platform_v2/tools/repair_bay/services/github_service.py",
+              "platform_v2/tools/repair_bay/services/pr_review_service.py",
+              "scripts/check_agent_single_writer.py",
+              "scripts/agents/run-codex-task.sh",
+              "scripts/backup/retention_prune.py"):
+        assert not is_in_scope(p, PLATFORM_SCOPE), p
+
+
+def test_the_scripts_block_is_targeted_not_a_blanket_ban():
+    """Guards against over-correction: scripts/ stays reachable apart from the
+    named governance/backup/cross-lane subtrees. An over-broad glob would remove
+    real Lane 3 reach silently."""
+    for p in ("scripts/deploy_with_sha.sh",
+              "scripts/deploy_drift_check.py",
+              "scripts/ingest_codex_cli_tokens.py"):
+        assert is_in_scope(p, PLATFORM_SCOPE), p
