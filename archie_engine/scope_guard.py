@@ -58,14 +58,16 @@ DEFAULT_ARCHIE_CODE_SCOPE: dict = {
 # is untouched by this change. The blocked globs are the platform never-touch surface:
 # secrets/infra/CI/git internals, THE GOVERNANCE KERNEL (universal — blocked for every
 # lane including hers, since it enforces every other rule including which lane runs
-# and what gets approved), and the high-risk modules that still lack DB isolation.
+# and what gets approved), schema migrations, and the high-risk modules that still
+# lack DB isolation.
 PLATFORM_SCOPE: dict = {
     "allowed_paths": [
         "platform_v2/",
         "ai_bridge/",
         "scripts/",
         "docs/",
-        "database/migrations/",
+        # NOTE: "database/migrations/" was granted here and REVOKED by owner
+        # decision 2026-08-23 — see the blocked glob below for the reasoning.
     ],
     "blocked_globs": [
         "*.env",
@@ -99,6 +101,14 @@ PLATFORM_SCOPE: dict = {
         # The single canonical retention pruner: its RETENTION dict is the source
         # of truth for every backup tier, including the off-site DR copies.
         "scripts/backup/*",
+        # Schema mutation. Owner decision 2026-08-23: Lane 3 does not author
+        # migrations. A migration is largely irreversible once run, and the
+        # human who runs it is reviewing SQL, not behaviour — so the PR gate is
+        # a weaker check here than it is for application code. Belt AND braces:
+        # the allowed_paths grant was removed too, but this glob is what makes
+        # the revocation durable — blocked_globs are evaluated FIRST and always
+        # win, so re-adding "database/" upstream cannot silently re-grant it.
+        "database/migrations/*",
         # Real production data; excluded until they have DB isolation.
         "platform_v2/tools/media_studio/*",
         "platform_v2/tools/game_studio/*",

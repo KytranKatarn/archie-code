@@ -74,3 +74,30 @@ def test_the_scripts_block_is_targeted_not_a_blanket_ban():
               "scripts/deploy_drift_check.py",
               "scripts/ingest_codex_cli_tokens.py"):
         assert is_in_scope(p, PLATFORM_SCOPE), p
+
+
+def test_schema_migrations_are_blocked():
+    """Owner decision 2026-08-23: Lane 3 does not author migrations.
+
+    A migration is largely irreversible once run, and the human running it is
+    reviewing SQL rather than behaviour -- so the PR gate is a weaker check here
+    than it is for application code.
+    """
+    for p in ("database/migrations/999_drop_everything.sql",
+              "database/migrations/001_init.sql",
+              "database/migrations/sub/nested.sql"):
+        assert not is_in_scope(p, PLATFORM_SCOPE), p
+
+
+def test_migrations_stay_blocked_even_if_database_is_re_allowed():
+    """The revocation must be durable.
+
+    blocked_globs are evaluated FIRST and always win, so re-adding a broader
+    "database/" grant upstream cannot silently re-open migrations. Without this,
+    the revocation is one careless allowed_paths edit away from being undone.
+    """
+    widened = {
+        "allowed_paths": list(PLATFORM_SCOPE["allowed_paths"]) + ["database/"],
+        "blocked_globs": PLATFORM_SCOPE["blocked_globs"],
+    }
+    assert not is_in_scope("database/migrations/999_drop_everything.sql", widened)
