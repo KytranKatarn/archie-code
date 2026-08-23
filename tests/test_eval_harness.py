@@ -68,9 +68,11 @@ async def test_run_eval_collects_scores_and_isolates_exceptions():
 # --- tasks_from_issues ------------------------------------------------------
 
 def test_tasks_from_issues_keeps_only_in_scope():
+    # #380 Lane 3: ai_bridge/ is now IN scope under PLATFORM_SCOPE, so the kernel
+    # itself is the out-of-scope fixture here (it stays blocked either way).
     issues = [
         {"id": 1, "file_path": "platform_v2/tools/doc/routes.py", "message": "m", "severity": "high"},
-        {"id": 2, "file_path": "ai_bridge/agent_loop.py", "message": "core", "severity": "high"},
+        {"id": 2, "file_path": "platform_v2/services/agent_service.py", "message": "kernel", "severity": "high"},
         {"id": 3, "file_path": "platform_v2/tools/media_studio/x.py", "message": "excluded", "severity": "low"},
         {"id": 4, "file_path": None, "message": "no path"},
     ]
