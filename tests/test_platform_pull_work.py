@@ -14,11 +14,13 @@ def test_platform_scope_allows_app_modules():
     assert is_in_scope("platform_v2/tools/fitness/routes.py", PLATFORM_SCOPE)
     assert is_in_scope("platform_v2/tools/doc/services/x.py", PLATFORM_SCOPE)
     assert is_in_scope("platform_v2/tests/test_x.py", PLATFORM_SCOPE)
+    # #380 Lane 3: PLATFORM_SCOPE was widened to platform-minus-kernel -- ai_bridge/
+    # is now reachable (it was excluded under the old 19-path allowlist).
+    assert is_in_scope("ai_bridge/agent_loop.py", PLATFORM_SCOPE)
 
 
 def test_platform_scope_denies_core_secrets_and_excluded_modules():
     assert not is_in_scope("platform_v2/services/agent_service.py", PLATFORM_SCOPE)
-    assert not is_in_scope("ai_bridge/agent_loop.py", PLATFORM_SCOPE)
     # media_studio/game_studio/media_hub are deliberately EXCLUDED (real prod data)
     assert not is_in_scope("platform_v2/tools/media_studio/routes.py", PLATFORM_SCOPE)
     # blocked globs always win, even under an allowed dir
@@ -86,15 +88,17 @@ async def test_pull_and_build_queue_error():
 
 
 async def test_pull_and_build_noop_when_all_out_of_scope():
-    stub = _StubEngine(_Conn([{"id": 1, "file_path": "ai_bridge/agent_loop.py", "severity": "high"}]))
+    # #380 Lane 3: ai_bridge/ is now IN scope, so the kernel itself is the fixture
+    # for "out of scope" -- it stays blocked under every PLATFORM_SCOPE revision.
+    stub = _StubEngine(_Conn([{"id": 1, "file_path": "platform_v2/services/agent_service.py", "severity": "high"}]))
     r = await Engine.pull_and_build(stub)
     assert r["success"] is True and r.get("skipped") is True
-    assert stub.run_build_calls == []  # core-platform finding filtered out
+    assert stub.run_build_calls == []  # governance-kernel finding filtered out
 
 
 async def test_pull_and_build_picks_highest_severity_in_scope():
     stub = _StubEngine(_Conn([
-        {"id": 1, "file_path": "ai_bridge/x.py", "severity": "critical"},  # out of scope (ignored)
+        {"id": 1, "file_path": "platform_v2/services/agent_service.py", "severity": "critical"},  # out of scope (ignored)
         {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "message": "m", "severity": "low"},
         {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "message": "m", "severity": "high"},
     ]))
