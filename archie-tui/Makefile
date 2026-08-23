@@ -1,4 +1,7 @@
-VERSION ?= 0.1.0
+# Keep in step with the newest published release, or a local `make build`
+# self-reports a version that no longer exists (it said 0.1.0 while v0.1.1
+# was live). Release builds override this: `make all VERSION=x.y.z`.
+VERSION ?= 0.1.2
 BINARY_NAME = archie-code
 GO ?= go
 GOFLAGS = -ldflags "-s -w -X main.version=$(VERSION)"
