@@ -1,0 +1,75 @@
+# Run the test suites on PRs and on main.
+#
+# Before this, NOTHING ran them automatically: the repo's only workflow was
+# go-release.yml, which builds the TUI and does not test it. The 164 Python tests and
+# the Go tests ran only when someone remembered to, by hand.
+#
+# ⚠️ Deliberately economical — Actions minutes are a real budget:
+#   * path filters, so a docs- or workflow-only change does not spend a runner
+#   * one job per language, no matrix
+#   * pip cached on the lockfile-ish input (pyproject.toml)
+#
+# ⚠️ The Go tests need GOTMPDIR pointed somewhere executable. On a host where /tmp is
+#    mounted noexec, `go test` fails with "fork/exec ...: permission denied" — which
+#    reads as a code failure and is not one. Measured 2026-08-25 on the hub.
+
+name: tests
+
+# ⚠️ These path filters mean a docs-only change runs NO job. That is the point (see the
+# budget note above), but it also means this workflow must NOT be made a *required*
+# status check — a skipped required check blocks a PR forever.
+on:
+  pull_request:
+    paths: &code_paths
+      - "archie_engine/**"
+      - "archie-tui/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/tests.yml"
+  push:
+    branches: [main]
+    paths: *code_paths
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref — do not pay twice.
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: engine (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install --no-cache-dir .[dev]
+      - name: Test
+        # -p no:cacheprovider: the runner's checkout is fine, but this keeps the run
+        # identical to how the suite is invoked against a read-only container mount.
+        run: python -m pytest tests -q -p no:cacheprovider
+
+  go:
+    name: tui (go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archie-tui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: archie-tui/go.sum
+      - name: Test
+        env:
+          # See the note at the top — an unexecutable temp dir looks like a test failure.
+          GOTMPDIR: ${{ runner.temp }}
+        run: go test ./...
