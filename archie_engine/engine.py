@@ -41,7 +41,17 @@ class Engine:
         self.config = config
         self.db = Database(config.db_path)
         self.sessions = SessionManager(self.db)
-        self.inference = InferenceClient(config.ollama_host)
+        # Dispatcher-first (ADR-013): completions route through the hub's
+        # /api/internal/dhq/chat -> department_dispatcher, so Lane 3 gets welfare
+        # gating, the cold-load queue, capability routing and fleet placement — and
+        # becomes visible in task_execution_log. Falls back to the local host when the
+        # hub is unreachable: the owner-granted exemption (2026-08-25), because the
+        # builder must still run when the platform it repairs is down.
+        self.inference = InferenceClient(
+            config.ollama_host,
+            hub_url=config.hub_url,
+            hub_api_key=config.hub_api_key,
+        )
         self.intent_parser = IntentParser()
         self.tools = self._build_tool_registry()
         self.server = EngineServer(config.ws_host, config.ws_port)
