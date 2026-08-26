@@ -15,6 +15,24 @@ from archie_engine.inference import InferenceClient
 HUB = "http://100.64.0.4:3000"
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_hub_env(monkeypatch):
+    """Assert on EXPLICIT constructor args, never on the ambient environment.
+
+    ⚠️ `InferenceClient.__init__` falls back to ARCHIE_HUB_URL / ARCHIE_HUB_API_KEY /
+    INTERNAL_API_KEY when an arg is falsy. Those vars are SET wherever the engine
+    actually runs, so without this fixture `hub_url=""` silently resolved to the real
+    hub and `test_key_without_url_is_not_enabled` asserted False against True.
+
+    It passed in CI (clean env) and failed in the engine container — i.e. it was green
+    exactly where nothing runs and red exactly where everything does. Measured
+    2026-08-26: 2 of the 12 red tests on main were this.
+    """
+    for var in ("ARCHIE_HUB_URL", "ARCHIE_HUB_API_KEY", "INTERNAL_API_KEY",
+                "ARCHIE_ENGINE_PIN_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def _client(**kw) -> InferenceClient:
     return InferenceClient("http://127.0.0.1:11434", **kw)
 

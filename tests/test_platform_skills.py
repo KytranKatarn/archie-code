@@ -23,7 +23,20 @@ from archie_engine import platform_skills as ps
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Run one coroutine on its OWN loop.
+
+    ⚠️ Was `asyncio.get_event_loop().run_until_complete(coro)`, which relies on the
+    IMPLICIT event loop. pytest-asyncio 1.4.0 stopped creating one, so these 10 tests
+    raised "no current event loop" — and `pyproject.toml` carried a `<1.4` pin purely
+    to keep the implicit loop alive. That pin made a clean install green only by
+    freezing a dependency, while the engine container (which resolves differently)
+    ran a RED suite. Since the build loop gates on a green `pytest`, that red suite
+    meant no engine build could ever complete (#6027/#6038).
+
+    `asyncio.run` creates and closes a fresh loop per call, which is what every one of
+    these tests wants — each drives a single awaitable against a monkeypatched seam.
+    """
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------- attribution
