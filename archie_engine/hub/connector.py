@@ -374,7 +374,29 @@ class HubConnector:
         resp = await self.post("/api/internal/dhq/chat", data=payload,
                                timeout=_DHQ_COMPLETE_TIMEOUT)
         if isinstance(resp, dict):
+            # ⚠️ FAIL LOUD. `post()` never raises — it RETURNS {"error": ..., "status": N}.
+            # This used to end in `resp.get("response", "") or ""`, so every failure became
+            # an EMPTY STRING, indistinguishable from "the model answered nothing".
+            #
+            # Measured 2026-08-26: three plan attempts spent 903s failing over between a
+            # node without the model (404), a node that timed out (600s) and a saturated
+            # hub — and the build reported "could not parse a JSON op list from the plan",
+            # blaming the MODEL for an infrastructure failure that never reached one. The
+            # same masking hid a 401 for ten weeks (#6037): a stale key file shadowed the
+            # real credential, every call 401'd in 6ms, and the loop blamed the model then
+            # too.
+            #
+            # The sole production caller (`_plan_dispatch`) is already wrapped by `_plan`'s
+            # `except Exception -> "dispatch failed: {exc}"`, which is EXACTLY this signal
+            # and never once got the chance to fire.
+            err = resp.get("error")
+            if err:
+                status = resp.get("status")
+                raise RuntimeError(
+                    f"DHQ dispatch failed (status={status}): {err}"
+                )
             return resp.get("response", "") or ""
+        # A non-dict is not a failure we can describe; the caller's own retry sees "".
         return ""
 
     async def get_agent_status(self, agent_id: int) -> dict:
