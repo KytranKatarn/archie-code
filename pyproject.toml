@@ -40,7 +40,7 @@ Repository = "https://github.com/KytranKatarn/archie-code"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "pytest-asyncio>=0.23,<1.4"  # <1.4: 1.4.0 stopped implicitly creating an event loop, so 10 tests in test_platform_skills.py raise "no current event loop". Unpinned, a clean install silently gets a broken suite while a dev box with 1.3.0 stays green. Real fix = stop relying on the implicit loop (task #6028).,
+    "pytest-asyncio>=0.23",  # unpinned: tests no longer rely on the implicit event loop (#6028)
 ]
 
 [project.scripts]
