@@ -2,6 +2,7 @@
 
 import re
 
+# keyword routing table
 INTENT_PATTERNS = {
     "knowledge_query": {
         "keywords": ["what does", "how does", "explain", "what is", "describe", "documentation", "how to", "how do", "why does", "why is", "what are", "tell me about"],
