@@ -470,11 +470,34 @@ def _extract_line(task: str):
     return int(m.group(1)) if m else None
 
 
+# Trailing characters that end an English sentence but can never end a source path.
+# NOT a general punctuation strip: a path's own dots (foo.py) are interior, never final.
+_PATH_TRAILING_PUNCT = """.,;:!?'"`)]}>"""
+
+
 def _target_file_from_task(task: str):
     """Parse the 'File: <path>' the task references, so the planner can be shown that
-    file's content without the caller threading it explicitly."""
+    file's content without the caller threading it explicitly.
+
+    ⚠️ Strips trailing sentence punctuation. The regex stops at whitespace, so a task
+    written the NATURAL way — "File: archie_engine/hub/connector.py. The method..." —
+    yielded "…/connector.py." WITH the period. That path does not exist, `_read_target`
+    returned None, and the file content was silently NOT injected into the plan prompt.
+
+    The model then had to guess `old_string`, guessed the paraphrase in the task text,
+    and the dry-run correctly rejected it — so the failure surfaced as "the model
+    hallucinated old_string" when the real cause was this parse. Measured 2026-08-26;
+    a trailing comma ("File: x.py, near the top") failed identically.
+
+    The whole point of injecting file content (#380 Phase 2b) is that the model copies
+    the exact old_string instead of guessing it. A silent parse failure disables that
+    feature precisely when a task is phrased like prose, i.e. almost always.
+    """
     m = re.search(r"File:\s*([^\s()]+)", task or "")
-    return m.group(1) if m else None
+    if not m:
+        return None
+    path = m.group(1).rstrip(_PATH_TRAILING_PUNCT)
+    return path or None
 
 
 def _parse_ops(text: str):
