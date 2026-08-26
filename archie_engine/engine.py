@@ -595,6 +595,11 @@ class Engine:
                     # honors model_override on hub Ollama (which has it). Far better
                     # file-op plans than the general default (eval: ~60-75% vs ~25%).
                     model=self.config.build_plan_model or None,
+                    # Constrain the hub branch to the SAME op-array schema the offline
+                    # branch uses. Without it the two paths were not equivalent: bare
+                    # prose came back as Python once a source file was injected into the
+                    # prompt (#380 Phase 2b + KB #296229). Needs archie-platform #2846.
+                    format=OPS_SCHEMA,
                 )
             # hub offline → strictly-local fallback (engine's own Ollama). Constrain to
             # the op-array SCHEMA so the list always parses (#380 Phase 2 — bare "json"
