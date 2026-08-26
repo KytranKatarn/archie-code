@@ -343,7 +343,8 @@ class HubConnector:
                            capability: str | None = None,
                            prefer_agent: str | None = None,
                            module_id: str | None = None,
-                           model: str | None = None) -> str:
+                           model: str | None = None,
+                           format: dict | str | None = None) -> str:
         """Synchronous, strictly-local DHQ completion — for the build loop's plan
         step (#4256). POSTs to /api/internal/dhq/chat, which routes through the
         dispatcher (welfare + cost + cold-load queue, local_only) and returns the
@@ -364,6 +365,12 @@ class HubConnector:
             payload["module_id"] = module_id
         if model is not None:
             payload["model"] = model  # → hub passes as model_override (pins the plan model)
+        if format is not None:
+            # Structured-output constraint. "json" = bare JSON; a dict = a JSON SCHEMA,
+            # which constrains the SHAPE. Added platform-side in archie-platform #2846;
+            # before that the hub branch could not express a constraint AT ALL, and an
+            # injected source file pulled the model into emitting Python (KB #296229).
+            payload["format"] = format
         resp = await self.post("/api/internal/dhq/chat", data=payload,
                                timeout=_DHQ_COMPLETE_TIMEOUT)
         if isinstance(resp, dict):
