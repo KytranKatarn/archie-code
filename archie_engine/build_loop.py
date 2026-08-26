@@ -257,7 +257,15 @@ class BuildLoop:
             return [], f"dispatch failed: {exc}"
         ops = _parse_ops(raw or "")
         if ops is None:
-            return [], "could not parse a JSON op list from the plan"
+            # ⚠️ CARRY THE EVIDENCE. This used to discard `raw` entirely, so every parse
+            # failure read identically no matter what the model actually said — and the
+            # response is the ONLY thing that distinguishes the causes. Three consecutive
+            # WRONG root causes were diagnosed on 2026-08-26 (prose / quote-escaping /
+            # format-drift) and each was killed only by capturing the output by hand;
+            # this line would have shown all three in seconds (KB #296229).
+            preview = re.sub(r"\s+", " ", (raw or "").strip())[:200]
+            detail = f"; model returned: {preview!r}" if preview else "; model returned NOTHING"
+            return [], f"could not parse a JSON op list from the plan{detail}"
         return ops, None
 
     async def _plan_with_retries(self, task: str, target_file: str | None = None) -> tuple[list, str | None]:
