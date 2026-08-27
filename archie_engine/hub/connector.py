@@ -287,6 +287,18 @@ class HubConnector:
             data={"module": module} if module else {},
         )
 
+    async def record_proposal_pr(
+        self, proposal_id: int, pr_number: int, pr_url: str | None = None, branch: str | None = None
+    ) -> dict:
+        """Record this engine's fix PR on a Repair Bay proposal (spec 2026-08-26 Phase 3).
+        POST /api/internal/repair/proposals/<id>/pr -> the proposal flips to pr_open with
+        apply_mode='engine_pr', and the hub's merge-completion sweep settles it on merge --
+        the engine lane converges with ship_as_pr at ONE completion authority."""
+        return await self.post(
+            f"/api/internal/repair/proposals/{proposal_id}/pr",
+            data={"pr_number": pr_number, "pr_url": pr_url, "branch": branch},
+        )
+
     async def get_repair_proposals(self, status: str = "proposed") -> dict:
         """Read the Repair Bay improvement-proposal work queue (#4259 / #380 pull-work).
         GET /api/internal/repair/proposals?status= → {success, proposals[], count}.

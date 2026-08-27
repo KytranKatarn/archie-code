@@ -68,6 +68,11 @@ class _StubEngine:
     def _finding_is_stale(self, task, file_path):
         return False
 
+    async def _pull_proposal_build(self):
+        # These tests exercise the ISSUES lane's no-op paths; the proposals
+        # fall-through has its own suite (test_autopull_proposals.py).
+        return None
+
     def __init__(self, conn):
         self.hub_connector = conn
         self.run_build_calls = []
@@ -261,7 +266,6 @@ class _StubEngineStale(_StubEngine):
 
 
 _FP = "platform_v2/tools/doc/routes.py"
-
 
 async def test_stale_issue_is_skipped_and_next_one_is_built():
     """The top-severity issue is stale -> the loop must build the NEXT one, not give up."""
