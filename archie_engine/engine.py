@@ -743,6 +743,9 @@ class Engine:
             and not (tracker and tracker.should_skip(i.get("id"), cooldown))
         ]
         if not in_scope:
+            alt = await self._pull_proposal_build()
+            if alt is not None:
+                return alt
             logger.info("[pull_and_build] no in-scope un-attempted platform issues (%d in queue) — no-op", len(issues))
             return {"success": True, "skipped": True, "reason": "no in-scope issue",
                     "queue_size": len(issues)}
@@ -777,6 +780,11 @@ class Engine:
             logger.info(
                 "[pull_and_build] every in-scope issue is stale (%d skipped) — no-op", len(stale_skipped)
             )
+            alt = await self._pull_proposal_build()
+            if alt is not None:
+                if stale_skipped:
+                    alt.setdefault("stale_skipped", stale_skipped)
+                return alt
             return {"success": True, "skipped": True, "reason": "all in-scope issues stale",
                     "stale_skipped": stale_skipped, "queue_size": len(issues)}
 
@@ -795,6 +803,73 @@ class Engine:
         result["file_path"] = fp
         if stale_skipped:
             result["stale_skipped"] = stale_skipped
+        return result
+
+    async def _pull_proposal_build(self) -> dict | None:
+        """Proposals lane (spec 2026-08-26 Phase 3): when the ISSUES queue has no
+        buildable item, pull fix_requested audit proposals -- the class whose
+        FIND/REPLACE fix-gen failed or whose earlier PR closed unmerged. Same
+        scope guard, dedup cooldown ("proposal:<id>" keys -- no collision with
+        bare issue ids) and record-before-build rotation as the issues lane.
+        Excluded classes mirror _AUTO_FIX_EXCLUDED_ISSUE_CODES (owner hold
+        #4990); a proposal already carrying a pr_number is in flight elsewhere.
+        Deliberately fix_requested ONLY for now: 'approved' rows feed the
+        drain's own fix-gen lane, and #6042 measures before lanes compete.
+        Returns a build result dict, or None so the caller emits its no-op.
+        On a created PR, records it on the proposal via the hub so the
+        merge-completion sweep settles this lane exactly like ship_as_pr."""
+        from archie_engine.scope_guard import is_in_scope, PLATFORM_SCOPE
+
+        resp = await self.hub_connector.get_repair_proposals(status="fix_requested")
+        if not isinstance(resp, dict) or "error" in resp:
+            return None
+        props = resp.get("proposals", []) or []
+        tracker = getattr(self, "dedup_tracker", None)
+        cooldown = getattr(getattr(self, "config", None), "autopull_cooldown_sec", 21600)
+        excluded = {"SQL_INJECTION_RISK", "LARGE_FILE"}
+        cands = []
+        for p in props:
+            md = p.get("metadata") or {}
+            if not isinstance(md, dict):
+                continue
+            if md.get("source") != "code_health_audit":
+                continue
+            if (md.get("issue_code") or "").upper() in excluded:
+                continue
+            if md.get("pr_number"):
+                continue
+            fp = md.get("file_path")
+            if not fp or not is_in_scope(fp, PLATFORM_SCOPE):
+                continue
+            if tracker and tracker.should_skip(f"proposal:{p.get('id')}", cooldown):
+                continue
+            cands.append((p, fp))
+        if not cands:
+            return None
+        p, fp = cands[0]
+        if tracker:
+            tracker.record(f"proposal:{p.get('id')}")
+        task = _format_proposal_task(p, fp)
+        if self._finding_is_stale(task, fp):
+            logger.info("[pull_and_build] proposal #%s is STALE (%s) -- skipping", p.get("id"), fp)
+            return None
+        module = _module_from_path(fp)
+        logger.info(
+            "[pull_and_build] building PROPOSAL #%s (%s, module=%s) -> archie-platform",
+            p.get("id"), fp, module,
+        )
+        result = await self.run_build(task, target="archie-platform", module=module, target_file=fp)
+        result["proposal_id"] = p.get("id")
+        result["file_path"] = fp
+        if result.get("pr_number"):
+            try:
+                rec = await self.hub_connector.record_proposal_pr(
+                    p["id"], result["pr_number"], result.get("pr_url"), result.get("branch")
+                )
+                result["proposal_recorded"] = bool(isinstance(rec, dict) and rec.get("success"))
+            except Exception as exc:  # noqa: BLE001 - the PR exists; recording is bookkeeping
+                logger.warning("could not record PR on proposal #%s: %s", p.get("id"), exc)
+                result["proposal_recorded"] = False
         return result
 
     def _finding_is_stale(self, task: str, file_path: str) -> bool:
@@ -1082,6 +1157,32 @@ def _module_from_path(path: str) -> str | None:
     if len(parts) >= 3 and parts[0] == "platform_v2" and parts[1] == "tools":
         return parts[2]
     return None
+
+
+def _format_proposal_task(proposal: dict, file_path: str) -> str:
+    """Turn a Repair Bay improvement PROPOSAL into a build task (Phase 3 lane).
+
+    Proposals reaching the engine are the ones whose FIND/REPLACE fix-gen failed
+    (find_not_located) or whose earlier PR closed unmerged -- the stored diff is
+    useless, which is exactly why the engine plans from the LIVE file instead.
+    Only the finding's description travels; the engine reads the real source.
+    """
+    md = proposal.get("metadata") or {}
+    if not isinstance(md, dict):
+        md = {}
+    title = (proposal.get("title") or "code issue").strip()
+    desc = (proposal.get("description") or "").strip()
+    if len(desc) > 1200:
+        desc = desc[:1200] + " ..."
+    code = md.get("issue_code") or ""
+    out = (
+        "Fix this code issue in the A.R.C.H.I.E. platform. Make the MINIMAL, correct "
+        "change and only edit this file.\n\n"
+        f"File: {file_path}\nIssue code: {code}\nFinding: {title}\n"
+    )
+    if desc:
+        out += f"Detail: {desc}\n"
+    return out
 
 
 def _format_issue_task(issue: dict, file_path: str) -> str:
