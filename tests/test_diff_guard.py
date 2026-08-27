@@ -93,3 +93,41 @@ def test_gate_is_wired_before_the_test_stage_and_fails_closed():
     assert i_test != -1 and i_guard < i_test, "the gate must run BEFORE the test stage"
     assert "could not read diff" in src, "unreadable diff must fail closed"
     assert '"diff_unsafe"' in src
+
+
+# --- #6056: template placeholders in added PYTHON lines ------------------------------
+
+
+def test_pr2858_replay_template_url_refused():
+    d = _diff("platform_v2/services/agent_social_service.py", deleted=1,
+              added=['            "{{ SERVER_URL }}/api/generate",'])
+    ok, why = diff_guard.check(d, {"platform_v2/services/agent_social_service.py": 300},
+                               task="Fix this code issue.")
+    assert not ok and "template placeholder" in why
+
+
+def test_pr2863_replay_dollar_env_key_refused():
+    d = _diff("platform_v2/tools/department_hq/contractor_routes.py", deleted=1,
+              added=['    key_set = bool(os.environ.get("${OLLAMA_API_KEY}", "").strip())'])
+    ok, why = diff_guard.check(d, {"platform_v2/tools/department_hq/contractor_routes.py": 400},
+                               task="Fix this code issue.")
+    assert not ok and "template placeholder" in why
+
+
+def test_fstring_and_format_single_braces_pass():
+    d = _diff("a.py", deleted=1, added=[
+        '    url = f"{server}/api/generate"',
+        '    msg = "hello {name}".format(name=n)',
+    ])
+    ok, _ = diff_guard.check(d, {"a.py": 100}, task="Fix this code issue.")
+    assert ok
+
+
+def test_jinja_in_html_and_shell_var_in_sh_pass():
+    """The rule is .py-scoped: '{{ }}' is legitimate Jinja in templates, '${VAR}'
+    is legitimate shell -- and '${{ }}' is GitHub Actions in yml."""
+    d = (_diff("templates/x.html", deleted=1, added=['<a href="{{ url_for(\'home\') }}">'])
+         + _diff("scripts/run.sh", deleted=1, added=['echo "${HOME}/bin"'])
+         + _diff(".github/workflows/ci.yml", deleted=1, added=['    token: "${{ secrets.TOKEN }}"']))
+    ok, _ = diff_guard.check(d, {}, task="Fix this code issue.")
+    assert ok
