@@ -33,6 +33,16 @@ _PLACEHOLDER_RE = re.compile(
     r"""(?ix) ["'] (?: your_[a-z0-9_]+ | changeme | <your[^"']* ) ["'] """
 )
 
+# #6056: template placeholders pasted into PYTHON code -- PR #2858 shipped the
+# literal '{{ SERVER_URL }}' as a request URL, #2863 looked up an env var named
+# '${OLLAMA_API_KEY}'; both were APPROVED by review and broke at runtime. Scoped
+# to .py files ONLY: '{{ }}' is legitimate Jinja in .html, '${{ }}' is GitHub
+# Actions in .yml, '${VAR}' is shell in .sh. Python f-strings/str.format use
+# single braces and do not match.
+_TEMPLATE_PLACEHOLDER_RE = re.compile(
+    r"""(?x) ["'] [^"']* (?: \{\{ [^"']* \}\} | \$\{ [A-Za-z_][A-Za-z0-9_]* \} ) [^"']* ["'] """
+)
+
 # Narrow on purpose: the engine's fix tasks say "Make the MINIMAL, correct
 # change" -- only a task that NAMES a removal relaxes the ratio rule.
 _REMOVAL_ASK_RE = re.compile(
@@ -89,6 +99,12 @@ def check(diff_text: str, base_lines: dict, task: str = "") -> tuple[bool, str]:
                 return False, (
                     f"placeholder value in added line of {path}: {added.strip()[:80]!r} "
                     "-- template credentials/values are never a real fix"
+                )
+            if path.endswith(".py") and _TEMPLATE_PLACEHOLDER_RE.search(added):
+                return False, (
+                    f"template placeholder in added Python line of {path}: "
+                    f"{added.strip()[:80]!r} -- an unresolved '{{{{ }}}}' or '${{ }}' "
+                    "literal breaks at runtime (#6056, PRs #2858/#2863)"
                 )
 
     removal_ok = task_asks_removal(task)
