@@ -892,7 +892,16 @@ class Engine:
         res = read_file(self.config.platform_workspace, file_path)
         if res.get("error") or res.get("truncated"):
             return False
-        verdict, _detail = fix_efficacy.check(task, res.get("content", "") or "")
+        content = res.get("content", "") or ""
+        # #6054: a finding whose cited line lies beyond EOF is junk by construction.
+        # code_issues #8393 named line 25847 of a 744-line file and the build loop
+        # answered with a destructive rewrite (PR #2861). The read above succeeded
+        # and is untruncated, so "beyond EOF" is PROOF the finding cannot reproduce
+        # -- it meets the #5004 bar, unlike doubt, which still fails toward building.
+        line = fix_efficacy.parse_issue(task).get("line")
+        if line and int(line) > len(content.splitlines()):
+            return True
+        verdict, _detail = fix_efficacy.check(task, content)
         return verdict == fix_efficacy.RESOLVED
 
     async def _handle_apply_edit(self, msg: dict, send=None) -> dict:
