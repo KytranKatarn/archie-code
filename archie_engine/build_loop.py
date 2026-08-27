@@ -27,6 +27,7 @@ import re
 import time
 
 from archie_engine import fix_efficacy
+from archie_engine import diff_guard
 import uuid
 from dataclasses import dataclass, field
 
@@ -62,7 +63,7 @@ class BuildResult:
     task: str
     branch: str
     success: bool = False
-    stage: str = "init"          # last stage reached (branch/plan/apply/test/stage/commit/push/pr/done)
+    stage: str = "init"          # last stage reached (branch/plan/apply/diff_unsafe/test/stage/commit/push/pr/done)
     error: str = ""
     files: list = field(default_factory=list)
     tests_passed: bool = False
@@ -198,6 +199,32 @@ class BuildLoop:
             else:
                 result.efficacy = fix_efficacy.UNVERIFIED
                 result.efficacy_detail = f"could not re-read {target_file}: {rr.error}"
+
+        # 3c. DIFF-SAFETY GATE (#6053) -- refuse a destructive or placeholder-ridden
+        # change set BEFORE spending a test run. Engine PR #2861 deleted 698/744
+        # lines of mcp_server/server.py, added placeholder credentials, and PASSED
+        # tests (the platform suite never imports that module) -- the diff was the
+        # only tell. Plain `git diff` equals diff-vs-HEAD here because nothing is
+        # staged until stage 5. FAIL CLOSED on an unreadable diff: this gate exists
+        # because "could not check" was previously indistinguishable from "fine",
+        # and a worktree where `git diff` fails cannot add/commit/push either.
+        dv = await self.tools.execute("git_ops", operation="diff")
+        if not dv.success:
+            return self._done(result.fail("diff_unsafe", f"could not read diff: {dv.error}"), start)
+        import shlex as _shlex
+        base_lines: dict = {}
+        for _p in applied:
+            bl = await self.tools.execute(
+                "shell_ops", command=f"git show {_shlex.quote('HEAD:' + _p)} | wc -l", timeout=30)
+            try:
+                # a failed `git show` = file new at HEAD -> base 0 (ratio rule cannot apply)
+                base_lines[_p] = int(((getattr(bl, "output", "") or "").strip() or "0")) if bl.success else 0
+            except ValueError:
+                base_lines[_p] = 0
+        _ok, _why = diff_guard.check(getattr(dv, "output", "") or "", base_lines, task=task)
+        await _emit("diff_guard", "ok" if _ok else _why)
+        if not _ok:
+            return self._done(result.fail("diff_unsafe", _why), start)
 
         await _emit("test", self.test_command)
         # 4. test — deploy ONLY on green
