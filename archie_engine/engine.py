@@ -912,16 +912,25 @@ class Engine:
         if res.get("error") or res.get("truncated"):
             return False
         content = res.get("content", "") or ""
+        verdict, _detail = fix_efficacy.check(task, content)
+        if verdict != fix_efficacy.UNVERIFIED:
+            return verdict == fix_efficacy.RESOLVED
         # #6054: a finding whose cited line lies beyond EOF is junk by construction.
         # code_issues #8393 named line 25847 of a 744-line file and the build loop
         # answered with a destructive rewrite (PR #2861). The read above succeeded
         # and is untruncated, so "beyond EOF" is PROOF the finding cannot reproduce
         # -- it meets the #5004 bar, unlike doubt, which still fails toward building.
-        line = fix_efficacy.parse_issue(task).get("line")
-        if line and int(line) > len(content.splitlines()):
+        # LAST resort, deliberately scoped to messages NO checker recognises (#6086):
+        # a recognised class keeps its own fallback -- the line-length checker re-scans
+        # the whole file when the cited line moved, so a beyond-EOF line-length finding
+        # that still reproduces elsewhere must keep building; and a recognised-but-
+        # unverifiable finding is doubt, not proof. Mirrors the platform reconciler
+        # (its recognised branches return before the beyond-EOF rule can fire).
+        issue = fix_efficacy.parse_issue(task)
+        line, message = issue.get("line"), issue.get("message") or ""
+        if line and int(line) > len(content.splitlines()) and not fix_efficacy.recognizes(message):
             return True
-        verdict, _detail = fix_efficacy.check(task, content)
-        return verdict == fix_efficacy.RESOLVED
+        return False
 
     async def _handle_apply_edit(self, msg: dict, send=None) -> dict:
         """Approval-gated write (Task 5): stash the edit + emit an approval_request;

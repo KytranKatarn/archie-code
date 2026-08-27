@@ -184,6 +184,16 @@ def test_bare_pyflakes_wording_without_a_code_is_recognised():
     assert fix_efficacy.check(_t("'os' imported but unused"), "import os\n")[0] == fix_efficacy.STILL_PRESENT
 
 
+def test_ruff_backtick_quoting_matches_pyflakes_output():
+    """ruff stores "F401 `os` imported but unused"; pyflakes emits 'os'. Before #6086 the
+    quoting mismatch made every ruff-sourced finding read RESOLVED while still present —
+    the same defect that drove the platform reconciler's archive/recreate oscillator
+    (platform PR #2896). The needle must unify quoting before comparing."""
+    task = _t("F401 `os` imported but unused")
+    assert fix_efficacy.check(task, "import os\n")[0] == fix_efficacy.STILL_PRESENT
+    assert fix_efficacy.check(task, "x = 1\n")[0] == fix_efficacy.RESOLVED
+
+
 def test_unrelated_pyflakes_finding_does_not_mask_a_fix():
     """Only the ORIGINAL finding matters. An unrelated warning elsewhere must not make a
     genuinely-fixed finding look unresolved."""
@@ -195,3 +205,28 @@ def test_line_length_checker_still_wins_for_its_own_findings():
     """Checker ordering: a line-length message must not fall through to pyflakes."""
     assert fix_efficacy.check(TASK_7844, "x" * 124)[0] == fix_efficacy.STILL_PRESENT
     assert fix_efficacy.check(TASK_7844, "x" * 80)[0] == fix_efficacy.RESOLVED
+
+
+# --- #6086: the beyond-EOF shortcut must not pre-empt a recognised checker -----------------
+# test_not_stale_when_finding_still_present above IS the regression case: TASK_7844 cites
+# line 56, the file has ONE 124-char line, and before #6086 the #6054 EOF shortcut fired
+# first and judged a still-reproducing finding stale. These pin the scoping that fixes it.
+
+
+def test_recognizes_claims_checker_classes_only():
+    assert fix_efficacy.recognizes("Line exceeds 120 characters (124)") is True
+    assert fix_efficacy.recognizes("F401 'os' imported but unused") is True
+    assert fix_efficacy.recognizes("F401 `os` imported but unused") is True
+    assert fix_efficacy.recognizes("The server is loading tools from the database") is False
+    assert fix_efficacy.recognizes("") is False
+
+
+def test_recognised_but_unverifiable_beyond_eof_is_NOT_stale(tmp_path):
+    """A pyflakes-class finding on a file that does not parse is DOUBT, not proof — even
+    when the cited line lies beyond EOF. Doubt fails toward building; the #6054 beyond-EOF
+    rule is scoped to messages NO checker recognises, mirroring the platform reconciler."""
+    (tmp_path / "f.py").write_text("def broken(\n")
+    task = _format_issue_task(
+        {"message": "F401 'os' imported but unused", "severity": "low", "line_number": 99}, "f.py"
+    )
+    assert Engine._finding_is_stale(_selfish(tmp_path), task, "f.py") is False

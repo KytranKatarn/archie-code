@@ -122,6 +122,11 @@ def _needle_from_message(message: str) -> str:
     """
     text = (message or "").strip()
     text = _PYFLAKES_CODE_RE.sub("", text, count=1).strip()
+    # ruff quotes names with BACKTICKS (`os`); pyflakes emits 'os'. Without unifying the
+    # quoting a ruff-sourced finding can never match pyflakes' own output, so every such
+    # finding reads RESOLVED while still present — the platform-side reconciler archived
+    # and recreated ~30 rows per finding this way (platform PR #2896; ported per #6086).
+    text = text.replace("`", "'")
     return text.strip(" -:")
 
 
@@ -153,6 +158,19 @@ def _check_pyflakes(message: str, file_text: str):
 
 # Ordered; the first checker that recognises the message wins.
 _CHECKERS = (_check_line_length, _check_pyflakes)
+
+
+def recognizes(message: str) -> bool:
+    """True when a deterministic checker CLAIMS this finding class — even one it cannot
+    verify against the current source (pyflakes absent, file unparseable).
+
+    The engine's beyond-EOF last resort (#6054) must apply only to UNrecognised messages:
+    a recognised class keeps its own fallback (the line-length checker deliberately
+    re-scans the whole file when the cited line moved), and a recognised-but-unverifiable
+    finding is DOUBT, which fails toward building. Mirrors the platform reconciler, where
+    every recognised branch returns before the beyond-EOF rule can fire (#6086).
+    """
+    return any(checker(message or "", "") is not None for checker in _CHECKERS)
 
 
 def check(task: str, file_text: str):
