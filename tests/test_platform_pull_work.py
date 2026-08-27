@@ -104,8 +104,8 @@ async def test_pull_and_build_noop_when_all_out_of_scope():
 async def test_pull_and_build_picks_highest_severity_in_scope():
     stub = _StubEngine(_Conn([
         {"id": 1, "file_path": "platform_v2/services/agent_service.py", "severity": "critical"},  # out of scope (ignored)
-        {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "message": "m", "severity": "low"},
-        {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "message": "m", "severity": "high"},
+        {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "message": "'x' imported but unused", "severity": "low"},
+        {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "message": "'x' imported but unused", "severity": "high"},
     ]))
     r = await Engine.pull_and_build(stub)
     assert len(stub.run_build_calls) == 1
@@ -177,8 +177,10 @@ async def test_pull_and_build_skips_attempted_issue(tmp_path):
     tracker = DedupTracker(tmp_path)
     tracker.record(2)  # the high-severity fitness issue was already attempted
     conn = _Conn([
-        {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "severity": "high"},
-        {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "severity": "low"},
+        {"id": 2, "file_path": "platform_v2/tools/fitness/routes.py", "severity": "high",
+         "message": "'x' imported but unused"},
+        {"id": 3, "file_path": "platform_v2/tools/doc/routes.py", "severity": "low",
+         "message": "'x' imported but unused"},
     ])
     stub = _StubEngineDedup(conn, tracker)
     r = await Engine.pull_and_build(stub)
@@ -206,7 +208,7 @@ class _LimitRecordingConn:
     async def get_repair_issues(self, status="open", limit=100, auto_fixable=True, path_prefixes=None):
         self.captured_limit = limit
         return {"success": True, "issues": [
-            {"id": 9, "file_path": "platform_v2/tools/doc/routes.py", "message": "m", "severity": "low"},
+            {"id": 9, "file_path": "platform_v2/tools/doc/routes.py", "message": "'x' imported but unused", "severity": "low"},
         ]}
 
 
@@ -270,8 +272,8 @@ _FP = "platform_v2/tools/doc/routes.py"
 async def test_stale_issue_is_skipped_and_next_one_is_built():
     """The top-severity issue is stale -> the loop must build the NEXT one, not give up."""
     conn = _Conn([
-        {"id": 7846, "file_path": _FP, "severity": "high", "message": "m", "line_number": 178},
-        {"id": 7844, "file_path": _FP, "severity": "low", "message": "m", "line_number": 56},
+        {"id": 7846, "file_path": _FP, "severity": "high", "message": "'x' imported but unused", "line_number": 178},
+        {"id": 7844, "file_path": _FP, "severity": "low", "message": "'x' imported but unused", "line_number": 56},
     ])
     stub = _StubEngineStale(conn, stale_ids={178})
     r = await Engine.pull_and_build(stub)
@@ -284,7 +286,7 @@ async def test_stale_issue_is_skipped_and_next_one_is_built():
 async def test_all_stale_is_a_noop_not_a_build():
     """Every candidate stale -> no build at all, reported honestly."""
     conn = _Conn([
-        {"id": 7846, "file_path": _FP, "severity": "high", "message": "m", "line_number": 178},
+        {"id": 7846, "file_path": _FP, "severity": "high", "message": "'x' imported but unused", "line_number": 178},
     ])
     stub = _StubEngineStale(conn, stale_ids={178})
     r = await Engine.pull_and_build(stub)
@@ -296,7 +298,7 @@ async def test_all_stale_is_a_noop_not_a_build():
 
 async def test_live_finding_is_untouched_by_the_skip():
     """No stale ids -> behaviour identical to before #5004 (no silent skipping of real work)."""
-    conn = _Conn([{"id": 7844, "file_path": _FP, "severity": "low", "message": "m", "line_number": 56}])
+    conn = _Conn([{"id": 7844, "file_path": _FP, "severity": "low", "message": "'x' imported but unused", "line_number": 56}])
     stub = _StubEngineStale(conn, stale_ids=set())
     r = await Engine.pull_and_build(stub)
     assert r["issue_id"] == 7844

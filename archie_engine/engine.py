@@ -716,6 +716,7 @@ class Engine:
         in-scope ones or every cycle no-ops.
         """
         from archie_engine.scope_guard import is_in_scope, PLATFORM_SCOPE
+        from archie_engine.issue_classes import is_mechanical_message
 
         if not self.hub_connector:
             return {"success": False, "error": "no hub connector"}
@@ -737,18 +738,31 @@ class Engine:
         # ROTATES through findings instead of hammering the top one (#380).
         tracker = getattr(self, "dedup_tracker", None)
         cooldown = getattr(getattr(self, "config", None), "autopull_cooldown_sec", 21600)
-        in_scope = [
+        candidates = [
             i for i in issues
             if i.get("file_path") and is_in_scope(i["file_path"], PLATFORM_SCOPE)
             and not (tracker and tracker.should_skip(i.get("id"), cooldown))
         ]
+        # #5933: an autonomous coder may only attempt MECHANICAL findings — fail closed.
+        # Without this gate the severity sort below actively PREFERRED high-severity
+        # heuristic security findings, and 5/5 such PRs on 2026-08-27 were defective
+        # (three boot/import-breaking). Refusals are counted and surfaced, never silent.
+        in_scope = [i for i in candidates if is_mechanical_message(i.get("message"))]
+        non_mechanical = len(candidates) - len(in_scope)
+        if non_mechanical:
+            logger.info(
+                "[pull_and_build] refused %d non-mechanical finding(s) (#5933 fail-closed gate)",
+                non_mechanical,
+            )
         if not in_scope:
             alt = await self._pull_proposal_build()
             if alt is not None:
+                if non_mechanical:
+                    alt.setdefault("non_mechanical_refused", non_mechanical)
                 return alt
             logger.info("[pull_and_build] no in-scope un-attempted platform issues (%d in queue) — no-op", len(issues))
             return {"success": True, "skipped": True, "reason": "no in-scope issue",
-                    "queue_size": len(issues)}
+                    "queue_size": len(issues), "non_mechanical_refused": non_mechanical}
 
         _sev = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
         in_scope.sort(key=lambda i: -_sev.get((i.get("severity") or "").lower(), 0))
@@ -803,6 +817,8 @@ class Engine:
         result["file_path"] = fp
         if stale_skipped:
             result["stale_skipped"] = stale_skipped
+        if non_mechanical:
+            result["non_mechanical_refused"] = non_mechanical
         return result
 
     async def _pull_proposal_build(self) -> dict | None:
@@ -819,6 +835,7 @@ class Engine:
         On a created PR, records it on the proposal via the hub so the
         merge-completion sweep settles this lane exactly like ship_as_pr."""
         from archie_engine.scope_guard import is_in_scope, PLATFORM_SCOPE
+        from archie_engine.issue_classes import is_mechanical_code
 
         resp = await self.hub_connector.get_repair_proposals(status="fix_requested")
         if not isinstance(resp, dict) or "error" in resp:
@@ -826,7 +843,6 @@ class Engine:
         props = resp.get("proposals", []) or []
         tracker = getattr(self, "dedup_tracker", None)
         cooldown = getattr(getattr(self, "config", None), "autopull_cooldown_sec", 21600)
-        excluded = {"SQL_INJECTION_RISK", "LARGE_FILE"}
         cands = []
         for p in props:
             md = p.get("metadata") or {}
@@ -834,7 +850,10 @@ class Engine:
                 continue
             if md.get("source") != "code_health_audit":
                 continue
-            if (md.get("issue_code") or "").upper() in excluded:
+            # #5933 fail-closed allowlist (supersedes the #4990 two-code blocklist —
+            # SQL_INJECTION_RISK/LARGE_FILE stay refused because they are not in it):
+            # only the mechanical classes are buildable; an unrecognised code is NOT.
+            if not is_mechanical_code(md.get("issue_code")):
                 continue
             if md.get("pr_number"):
                 continue
