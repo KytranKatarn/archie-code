@@ -41,12 +41,21 @@ class HubAuth:
     def get_headers(self) -> dict:
         """Get auth headers for HTTP requests.
 
-        Key resolution order: stored key file, then the ARCHIE_HUB_API_KEY
-        env var. The hub's internal endpoints authenticate with
+        Key resolution order: the ARCHIE_HUB_API_KEY env var, then the stored
+        key file. The hub's internal endpoints authenticate with
         `Authorization: Bearer <INTERNAL_API_KEY>`, so setting that env var
         (e.g. in docker-compose) is enough — no key file needed.
+
+        ENV-FIRST IS LOAD-BEARING (#6037): with file-first resolution, a stale
+        key file — a node-registration key written into this slot in June —
+        shadowed the real internal key for ten weeks, 401ing every
+        authenticated call in 6ms while status read "connected". The engine
+        also only writes the file when absent, so a stale file self-preserves,
+        and any INTERNAL_API_KEY rotation would re-open the same hole. The
+        operator-set env var is authoritative; the file remains the path for
+        interactive installs that have no env configured.
         """
-        key = self.load_key() or os.environ.get("ARCHIE_HUB_API_KEY", "")
+        key = os.environ.get("ARCHIE_HUB_API_KEY", "") or self.load_key()
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"

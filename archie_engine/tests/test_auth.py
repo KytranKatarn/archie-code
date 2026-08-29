@@ -19,10 +19,25 @@ def test_load_key_missing(auth):
     assert loaded is None
 
 
-def test_bearer_header(auth):
+def test_bearer_header(auth, monkeypatch):
+    monkeypatch.delenv("ARCHIE_HUB_API_KEY", raising=False)
     auth.store_key("mykey")
     headers = auth.get_headers()
     assert headers["Authorization"] == "Bearer mykey"
+
+
+def test_env_var_wins_over_stale_file(auth, monkeypatch):
+    """#6037 regression: a stale stored key must never shadow the env var.
+
+    A June node-registration key sat in the hub-key file and 401'd every
+    authenticated call for ten weeks while status read "connected". The
+    operator-set env var is authoritative; the file is only the no-env
+    fallback for interactive installs.
+    """
+    auth.store_key("stale-node-key-from-june")
+    monkeypatch.setenv("ARCHIE_HUB_API_KEY", "current-internal-key")
+    headers = auth.get_headers()
+    assert headers["Authorization"] == "Bearer current-internal-key"
 
 
 def test_clear_key(auth):

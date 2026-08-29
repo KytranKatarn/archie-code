@@ -80,8 +80,21 @@ class HubConnector:
     # --- Hub Endpoint Methods ---
 
     async def health_check(self) -> dict:
-        """Check hub health."""
+        """Check hub health (UNAUTHENTICATED — proves reachability only)."""
         return await self.get("/api/archie/health")
+
+    async def auth_check(self) -> dict:
+        """AUTHENTICATED reachability probe (#6037).
+
+        `/api/archie/health` requires no auth, so a 200 there proves
+        reachability, never authorization — the engine once reported
+        "connected" for ten weeks while every authenticated call 401'd, and
+        the AUTH_FAILED branch keyed off that probe was unreachable. This
+        probes `/api/internal/repair/issues` (``@_require_internal_key``, the
+        cheapest read-only internal endpoint the engine already consumes via
+        ``fetch_repair_issues``) so a bad credential surfaces as a real 401.
+        """
+        return await self.get("/api/internal/repair/issues", params={"limit": 1})
 
     async def register_node(self, node_name: str, hostname: str | None = None,
                             gpu_model: str | None = None, gpu_vram_gb: float | None = None,

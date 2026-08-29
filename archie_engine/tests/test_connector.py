@@ -117,6 +117,18 @@ async def test_health_check(connector):
 
 
 @pytest.mark.asyncio
+async def test_auth_check_probes_an_internal_authenticated_path(connector):
+    """#6037: CONNECTED must be certified by an auth-gated endpoint, so the
+    probe targets /api/internal/* — never the open health endpoint."""
+    mock_resp = _mock_response(200, {"issues": []})
+    with patch("aiohttp.ClientSession.get", return_value=mock_resp) as mock_get:
+        result = await connector.auth_check()
+    assert "error" not in result
+    called_url = mock_get.call_args.args[0] if mock_get.call_args.args else mock_get.call_args.kwargs.get("url", "")
+    assert "/api/internal/repair/issues" in called_url
+
+
+@pytest.mark.asyncio
 async def test_search_knowledge(connector):
     # search_knowledge issues a GET (not POST) — patch the verb it actually uses.
     mock_resp = _mock_response(200, {"results": [{"content": "test"}]})
