@@ -53,12 +53,18 @@ class Heartbeat:
         The engine is a coding brain that dispatches work to the hub's agent
         team via the internal delegation API — it is NOT an Ollama inference
         node, so it does not register in `remote_nodes`. Connectivity is proven
-        by hitting the hub health endpoint with the internal Bearer key; a 200
-        means CONNECTED, anything else means OFFLINE.
+        by an AUTHENTICATED probe (``auth_check``): a 200 means CONNECTED, a
+        401 means AUTH_FAILED, anything else means OFFLINE.
+
+        ⚠️ Must stay ``auth_check``, never ``health_check`` (#6037): the health
+        endpoint requires no auth, so probing it reported "connected" for ten
+        weeks while every authenticated call 401'd — and the build loop chooses
+        the hub branch on this flag. A reachability probe cannot certify
+        authorization.
         """
         self.status = HubStatus.CONNECTING
         try:
-            result = await self.connector.health_check()
+            result = await self.connector.auth_check()
             if result and "error" not in result:
                 self.status = HubStatus.CONNECTED
                 logger.info("Connected to hub (client mode via internal key)")
@@ -79,9 +85,12 @@ class Heartbeat:
             await self._send_one_heartbeat()
 
     async def _send_one_heartbeat(self) -> None:
-        """Keepalive: re-probe hub health (client mode — no node heartbeat)."""
+        """Keepalive: re-probe the hub (client mode — no node heartbeat).
+
+        Authenticated probe, same as ``_register`` — see the #6037 note there.
+        """
         try:
-            result = await self.connector.health_check()
+            result = await self.connector.auth_check()
             if result and "error" not in result:
                 if self.status == HubStatus.OFFLINE:
                     logger.info("Hub connection restored")
