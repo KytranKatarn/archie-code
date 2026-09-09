@@ -54,6 +54,12 @@ class Engine:
         )
         self.intent_parser = IntentParser()
         self.tools = self._build_tool_registry()
+        # #6657 — fail-closed BY DESIGN: with ENGINE_WS_TOKEN unset the server answers
+        # every handshake 401 and start() logs an ERROR; there is no anonymous mode
+        # (test_server.py::test_unset_server_token_rejects_everyone). Compose sets
+        # ENGINE_WS_TOKEN on archie_engine + archie_comms (archie-platform #3259) and
+        # the container healthcheck sends the bearer, so a deployed engine never
+        # starts token-less by accident.
         self.server = EngineServer(
             config.ws_host,
             config.ws_port,
