@@ -54,7 +54,18 @@ class Engine:
         )
         self.intent_parser = IntentParser()
         self.tools = self._build_tool_registry()
-        self.server = EngineServer(config.ws_host, config.ws_port)
+        # #6657 — fail-closed BY DESIGN: with ENGINE_WS_TOKEN unset the server answers
+        # every handshake 401 and start() logs an ERROR; there is no anonymous mode
+        # (test_server.py::test_unset_server_token_rejects_everyone). Compose sets
+        # ENGINE_WS_TOKEN on archie_engine + archie_comms (archie-platform #3259) and
+        # the container healthcheck sends the bearer, so a deployed engine never
+        # starts token-less by accident.
+        self.server = EngineServer(
+            config.ws_host,
+            config.ws_port,
+            token=config.ws_token,
+            allowed_origins=config.ws_allowed_origins,
+        )
 
         # Skills
         skill_executor = SkillExecutor(
@@ -209,17 +220,15 @@ class Engine:
                     return {"output": f"KB search unavailable: {e}"}
 
             elif tool_name in ("file_read",):
+                # #6657: confined to the allowed workspace roots + secret deny — the
+                # previous `Path(path).read_text()` read ANY file the process could.
+                from archie_engine.workspace_ops import read_file
+
                 path = arguments.get("path", "")
-                result = asyncio.get_event_loop().run_until_complete(
-                    self.tools.execute("file_ops", operation="read", path=path, working_dir=".")
-                ) if False else None
-                # Use synchronous path for file reads
-                try:
-                    from pathlib import Path as _Path
-                    text = _Path(path).read_text(errors="replace")
-                    return {"output": text[:4000]}
-                except Exception as e:
-                    return {"output": f"Error reading {path}: {e}"}
+                res = read_file(None, path)
+                if "error" in res:
+                    return {"output": f"refused: {res['error']}"}
+                return {"output": res.get("content", "")[:4000]}
 
             elif tool_name in ("git_status", "git_diff"):
                 import subprocess
@@ -231,14 +240,26 @@ class Engine:
                     return {"output": f"git {sub} failed: {e}"}
 
             elif tool_name == "shell_exec":
+                # #6657: same allowlist as the ws "run …" path; never `shell=True`.
                 import subprocess
+
+                from archie_engine.tools.shell_ops import ShellPolicyError, scrubbed_env, validate_untrusted
+                from archie_engine.workspace_ops import allowed_roots
+
                 cmd = arguments.get("command", "")
                 try:
-                    out = subprocess.check_output(cmd, shell=True, text=True, timeout=30,
-                                                  stderr=subprocess.STDOUT)
+                    roots = allowed_roots()
+                    argv = validate_untrusted(cmd, roots)
+                except ShellPolicyError as e:
+                    return {"output": f"refused by shell policy: {e}"}
+                try:
+                    out = subprocess.check_output(
+                        argv, text=True, timeout=30, stderr=subprocess.STDOUT,
+                        cwd=str(roots[0]), env=scrubbed_env(),
+                    )
                     return {"output": out[:4000] or "(no output)"}
                 except subprocess.CalledProcessError as e:
-                    return {"output": f"Exit {e.returncode}: {e.output[:2000]}"}
+                    return {"output": f"Exit {e.returncode}: {(e.output or '')[:2000]}"}
                 except Exception as e:
                     return {"output": f"shell_exec failed: {e}"}
 
@@ -365,7 +386,14 @@ class Engine:
             return await self._get_platform_status()
 
         if msg_type == "session_create":
-            working_dir = msg.get("working_dir", str(Path.cwd()))
+            from archie_engine.workspace_ops import _safe_root
+
+            # #6657: a client-chosen working_dir is a workspace root — same allowlist
+            # as file_tree/file_read, never an arbitrary directory.
+            try:
+                working_dir = str(_safe_root(msg.get("working_dir") or None))
+            except (PermissionError, ValueError) as e:
+                return {"type": "error", "error": f"working_dir refused: {e}"}
             session = await self.sessions.create(working_dir=working_dir)
             return {"type": "session_created", "session_id": session["id"]}
 
@@ -908,7 +936,8 @@ class Engine:
         from archie_engine import fix_efficacy
         from archie_engine.workspace_ops import read_file
 
-        res = read_file(self.config.platform_workspace, file_path)
+        # trusted_root: the root is config-sourced (the platform clone), not a client's.
+        res = read_file(self.config.platform_workspace, file_path, trusted_root=True)
         if res.get("error") or res.get("truncated"):
             return False
         content = res.get("content", "") or ""
@@ -946,6 +975,8 @@ class Engine:
         path = msg.get("path", "")
         content = msg.get("content", "")
         session_id = msg.get("session_id") or ""
+        if not session_id:
+            return {"type": "error", "error": "apply_edit requires a session_id"}
 
         try:
             cur = read_file(root, path)
@@ -965,11 +996,17 @@ class Engine:
             k: v for k, v in self._pending_edits.items()
             if v.get("deadline", float("inf")) > now
         }
-        self._pending_edits[session_id] = {
-            "root": root, "path": path, "content": content,
+        # #6657: keyed by a fresh edit_id and bound to the session — an approval must
+        # name BOTH. The old session-keyed dict let an approval with an unknown/empty
+        # session resolve ANY outstanding edit (popitem()).
+        import uuid
+
+        edit_id = uuid.uuid4().hex
+        self._pending_edits[edit_id] = {
+            "session_id": session_id, "root": root, "path": path, "content": content,
             "deadline": now + self._approval_timeout_s,
         }
-        return {"type": "approval_request", "session_id": session_id,
+        return {"type": "approval_request", "session_id": session_id, "edit_id": edit_id,
                 "kind": "apply_edit", "path": path, "diff": diff}
 
     async def _handle_approval(self, msg: dict) -> dict:
@@ -978,13 +1015,15 @@ class Engine:
         from archie_engine.workspace_ops import write_file
 
         session_id = msg.get("session_id") or ""
+        edit_id = msg.get("edit_id") or ""
         approved = bool(msg.get("approved"))
-        pending = self._pending_edits.pop(session_id, None)
-        if pending is None and self._pending_edits:
-            # No session supplied → resolve the single outstanding edit.
-            _k, pending = self._pending_edits.popitem()
-        if not pending:
-            return {"type": "error", "error": "no pending edit to approve"}
+        if not session_id or not edit_id:
+            return {"type": "error", "error": "approval requires session_id and edit_id"}
+        pending = self._pending_edits.get(edit_id)
+        if pending is None or pending.get("session_id") != session_id:
+            # Refuse WITHOUT touching any other pending edit (no popitem fallback, #6657).
+            return {"type": "error", "error": "no pending edit for this session/edit_id"}
+        self._pending_edits.pop(edit_id, None)
         import time
 
         expired = time.monotonic() > pending.get("deadline", float("inf"))

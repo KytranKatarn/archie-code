@@ -215,7 +215,8 @@ class BuildLoop:
         base_lines: dict = {}
         for _p in applied:
             bl = await self.tools.execute(
-                "shell_ops", command=f"git show {_shlex.quote('HEAD:' + _p)} | wc -l", timeout=30)
+                "shell_ops", command=f"git show {_shlex.quote('HEAD:' + _p)} | wc -l", timeout=30,
+                trusted=True)  # engine-composed command (#6657: the ws path is allowlisted)
             try:
                 # a failed `git show` = file new at HEAD -> base 0 (ratio rule cannot apply)
                 base_lines[_p] = int(((getattr(bl, "output", "") or "").strip() or "0")) if bl.success else 0
@@ -228,7 +229,10 @@ class BuildLoop:
 
         await _emit("test", self.test_command)
         # 4. test — deploy ONLY on green
-        tr = await self.tools.execute("shell_ops", command=self.test_command, timeout=self.test_timeout)
+        tr = await self.tools.execute(
+            "shell_ops", command=self.test_command, timeout=self.test_timeout,
+            trusted=True,  # config-composed test command needs pipes (#6657)
+        )
         result.tests_passed = bool(tr.success)
         result.test_output = ((getattr(tr, "output", "") or getattr(tr, "error", "") or "")[:4000])
         if not tr.success:

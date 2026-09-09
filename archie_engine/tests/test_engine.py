@@ -8,9 +8,18 @@ from archie_engine.engine import Engine
 from archie_engine.config import EngineConfig
 
 
+TOKEN = "t-engine-test"
+AUTH = {"additional_headers": {"Authorization": f"Bearer {TOKEN}"}}  # #6657 handshake bearer
+
+
 @pytest_asyncio.fixture
-async def engine(tmp_path):
-    config = EngineConfig(data_dir=tmp_path, ws_port=0)
+async def engine(tmp_path, monkeypatch):
+    # #6657: session_create / file ops accept only allowlisted roots — the test's
+    # tmp_path is the single workspace root for this engine.
+    monkeypatch.setenv("ARCHIE_ENGINE_WORKSPACE", str(tmp_path))
+    monkeypatch.delenv("ARCHIE_PLATFORM_WORKSPACE", raising=False)
+    monkeypatch.delenv("ARCHIE_ENGINE_WS_ROOTS", raising=False)
+    config = EngineConfig(data_dir=tmp_path, ws_port=0, ws_token=TOKEN)
     eng = Engine(config)
     await eng.start()
     yield eng
@@ -25,8 +34,8 @@ async def test_engine_starts_and_stops(engine):
 @pytest.mark.asyncio
 async def test_engine_creates_session(engine):
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({"type": "session_create", "working_dir": "/tmp"}))
+    async with websockets.connect(uri, **AUTH) as ws:
+        await ws.send(json.dumps({"type": "session_create", "working_dir": str(engine.config.data_dir)}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "session_created"
         assert response.get("session_id") is not None
@@ -35,7 +44,7 @@ async def test_engine_creates_session(engine):
 @pytest.mark.asyncio
 async def test_engine_ping(engine):
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({"type": "ping"}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "pong"
@@ -45,7 +54,7 @@ async def test_engine_ping(engine):
 async def test_engine_processes_message(engine):
     """E2E: send a message, get a response (may error on inference but shouldn't crash)."""
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({
             "type": "message",
             "content": "git status",
@@ -60,8 +69,8 @@ async def test_engine_processes_message(engine):
 async def test_engine_session_resume(engine):
     """Create a session then resume it."""
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({"type": "session_create", "working_dir": "/tmp"}))
+    async with websockets.connect(uri, **AUTH) as ws:
+        await ws.send(json.dumps({"type": "session_create", "working_dir": str(engine.config.data_dir)}))
         created = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         session_id = created["session_id"]
 
@@ -75,7 +84,7 @@ async def test_engine_session_resume(engine):
 async def test_engine_session_resume_not_found(engine):
     """Resume a non-existent session returns error."""
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({"type": "session_resume", "session_id": "nonexistent"}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "error"
@@ -85,7 +94,7 @@ async def test_engine_session_resume_not_found(engine):
 async def test_engine_unknown_message_type(engine):
     """Unknown message type returns error."""
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({"type": "frobnicate"}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "error"
@@ -94,12 +103,12 @@ async def test_engine_unknown_message_type(engine):
 @pytest.mark.asyncio
 async def test_engine_dispatch_decision_in_response():
     """Engine responses should include dispatch_target field."""
-    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999", ws_token=TOKEN)
     engine = Engine(config)
     await engine.start()
 
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}", **AUTH) as ws:
             await ws.send(json.dumps({
                 "type": "message",
                 "content": "What is the Bridge dispatcher?",
@@ -116,12 +125,12 @@ async def test_engine_dispatch_decision_in_response():
 @pytest.mark.asyncio
 async def test_engine_shell_not_triggered_by_questions():
     """Regression: natural language questions must not run as shell commands."""
-    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999", ws_token=TOKEN)
     engine = Engine(config)
     await engine.start()
 
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}", **AUTH) as ws:
             await ws.send(json.dumps({
                 "type": "message",
                 "content": "What models are available?",
@@ -136,12 +145,12 @@ async def test_engine_shell_not_triggered_by_questions():
 @pytest.mark.asyncio
 async def test_engine_delegation():
     """Engine handles delegated tasks from Claude."""
-    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999", ws_token=TOKEN)
     engine = Engine(config)
     await engine.start()
 
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}", **AUTH) as ws:
             await ws.send(json.dumps({
                 "type": "delegate",
                 "task": "read the config file",
@@ -159,12 +168,12 @@ async def test_engine_delegation():
 @pytest.mark.asyncio
 async def test_engine_state_sync():
     """Engine handles incoming state sync events."""
-    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999")
+    config = EngineConfig(ws_port=0, ollama_host="http://localhost:99999", ws_token=TOKEN)
     engine = Engine(config)
     await engine.start()
 
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}") as ws:
+        async with websockets.connect(f"ws://127.0.0.1:{engine.server.port}", **AUTH) as ws:
             await ws.send(json.dumps({
                 "type": "state_sync",
                 "event": {
@@ -382,10 +391,21 @@ async def test_session_send_routes_through_message_path(tmp_path):
     assert out.get("session_id") == "s1"
 
 
+@pytest.fixture
+def ws_root(tmp_path, monkeypatch):
+    """#6657: apply_edit/file ops only accept ALLOWLISTED roots — make tmp_path one."""
+    monkeypatch.setenv("ARCHIE_ENGINE_WORKSPACE", str(tmp_path))
+    monkeypatch.delenv("ARCHIE_PLATFORM_WORKSPACE", raising=False)
+    monkeypatch.delenv("ARCHIE_ENGINE_WS_ROOTS", raising=False)
+    return tmp_path
+
+
 @pytest.mark.asyncio
-async def test_apply_edit_requires_approval(tmp_path):
+async def test_apply_edit_requires_approval(ws_root):
     """Task 5: apply_edit stashes the write + emits approval_request; the file is
-    written only after an approval frame with approved=true."""
+    written only after an approval frame with approved=true — and (#6657) the
+    approval must name BOTH the session and the edit_id it was issued."""
+    tmp_path = ws_root
     config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
     engine = Engine(config)
     target = tmp_path / "f.txt"
@@ -396,38 +416,113 @@ async def test_apply_edit_requires_approval(tmp_path):
     })
     assert req["type"] == "approval_request"
     assert req["kind"] == "apply_edit" and req["path"] == "f.txt"
+    assert req["edit_id"]
     assert not target.exists()  # nothing written yet
 
-    den = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": False})
+    den = await engine.handle_message({"type": "approval", "session_id": "s1", "edit_id": req["edit_id"], "approved": False})
     assert den["type"] == "apply_cancelled"
     assert not target.exists()
 
-    await engine.handle_message({
+    req = await engine.handle_message({
         "type": "apply_edit", "session_id": "s1",
         "root": str(tmp_path), "path": "f.txt", "content": "hello\n",
     })
-    res = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": True})
+    res = await engine.handle_message({"type": "approval", "session_id": "s1", "edit_id": req["edit_id"], "approved": True})
     assert res["type"] == "apply_result"
     assert target.read_text() == "hello\n"
 
 
 @pytest.mark.asyncio
-async def test_apply_edit_approval_fails_closed_on_timeout(tmp_path):
+async def test_apply_edit_approval_fails_closed_on_timeout(ws_root):
     """Task 5: a lapsed approval window fails CLOSED — even approved=true does not
     write once the deadline has passed."""
+    tmp_path = ws_root
     config = EngineConfig(data_dir=tmp_path, hub_url="", hub_api_key="")
     engine = Engine(config)
     engine._approval_timeout_s = 0.0  # any later approval is already past deadline
     target = tmp_path / "f.txt"
 
-    await engine.handle_message({
+    req = await engine.handle_message({
         "type": "apply_edit", "session_id": "s1",
         "root": str(tmp_path), "path": "f.txt", "content": "x\n",
     })
-    res = await engine.handle_message({"type": "approval", "session_id": "s1", "approved": True})
+    res = await engine.handle_message({"type": "approval", "session_id": "s1", "edit_id": req["edit_id"], "approved": True})
     assert res["type"] == "apply_cancelled"
     assert res.get("reason") == "timeout"
     assert not target.exists()
+
+
+# ── #6657: the approval cannot be redirected, and edits stay confined ────────
+
+
+@pytest.mark.asyncio
+async def test_approval_needs_session_and_edit_id(ws_root):
+    engine = Engine(EngineConfig(data_dir=ws_root, hub_url="", hub_api_key=""))
+    req = await engine.handle_message({
+        "type": "apply_edit", "session_id": "s1", "root": str(ws_root), "path": "f.txt", "content": "x\n",
+    })
+    for frame in (
+        {"type": "approval", "session_id": "s1", "approved": True},                       # no edit_id
+        {"type": "approval", "edit_id": req["edit_id"], "approved": True},                 # no session
+        {"type": "approval", "session_id": "OTHER", "edit_id": req["edit_id"], "approved": True},  # wrong session
+        {"type": "approval", "session_id": "s1", "edit_id": "bogus", "approved": True},   # wrong edit
+    ):
+        res = await engine.handle_message(frame)
+        assert res["type"] == "error", frame
+        assert not (ws_root / "f.txt").exists()
+    # The real approval still works afterwards — the refusals popped nothing.
+    ok = await engine.handle_message({"type": "approval", "session_id": "s1", "edit_id": req["edit_id"], "approved": True})
+    assert ok["type"] == "apply_result"
+
+
+@pytest.mark.asyncio
+async def test_mismatched_approval_leaves_other_pending_edits_alone(ws_root):
+    """The old popitem() fallback resolved SOME edit on a session mismatch."""
+    engine = Engine(EngineConfig(data_dir=ws_root, hub_url="", hub_api_key=""))
+    a = await engine.handle_message({"type": "apply_edit", "session_id": "sa", "root": str(ws_root), "path": "a.txt", "content": "a\n"})
+    b = await engine.handle_message({"type": "apply_edit", "session_id": "sb", "root": str(ws_root), "path": "b.txt", "content": "b\n"})
+    res = await engine.handle_message({"type": "approval", "session_id": "sa", "edit_id": b["edit_id"], "approved": True})
+    assert res["type"] == "error"
+    assert set(engine._pending_edits) == {a["edit_id"], b["edit_id"]}
+    assert not (ws_root / "a.txt").exists() and not (ws_root / "b.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_requires_session_id(ws_root):
+    engine = Engine(EngineConfig(data_dir=ws_root, hub_url="", hub_api_key=""))
+    res = await engine.handle_message({"type": "apply_edit", "root": str(ws_root), "path": "f.txt", "content": "x"})
+    assert res["type"] == "error"
+    assert engine._pending_edits == {}
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_outside_allowed_root_is_refused(ws_root, tmp_path_factory):
+    engine = Engine(EngineConfig(data_dir=ws_root, hub_url="", hub_api_key=""))
+    other = tmp_path_factory.mktemp("elsewhere")
+    req = await engine.handle_message({"type": "apply_edit", "session_id": "s1", "root": str(other), "path": "f.txt", "content": "x"})
+    res = await engine.handle_message({"type": "approval", "session_id": "s1", "edit_id": req.get("edit_id", ""), "approved": True})
+    assert res["type"] in ("apply_result", "error")
+    assert "error" in res  # write_file refused: root outside allowed workspaces
+    assert not (other / "f.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_session_create_refuses_working_dir_outside_roots(engine, ws_root):
+    bad = await engine.handle_message({"type": "session_create", "working_dir": "/"})
+    assert bad["type"] == "error"
+    ok = await engine.handle_message({"type": "session_create", "working_dir": str(ws_root)})
+    assert ok["type"] == "session_created"
+
+
+def test_mcp_file_read_and_shell_exec_are_confined(ws_root):
+    engine = Engine(EngineConfig(data_dir=ws_root, hub_url="", hub_api_key=""))
+    (ws_root / "ok.txt").write_text("fine\n")
+    (ws_root / ".env").write_text("SECRET=1\n")
+    assert engine._mcp_tool_handler("file_read", {"path": "ok.txt"})["output"] == "fine\n"
+    assert engine._mcp_tool_handler("file_read", {"path": ".env"})["output"].startswith("refused")
+    assert engine._mcp_tool_handler("file_read", {"path": "/etc/passwd"})["output"].startswith("refused")
+    assert engine._mcp_tool_handler("shell_exec", {"command": "cat /etc/passwd"})["output"].startswith("refused by shell policy")
+    assert engine._mcp_tool_handler("shell_exec", {"command": "ls; id"})["output"].startswith("refused by shell policy")
 
 
 @pytest.mark.asyncio

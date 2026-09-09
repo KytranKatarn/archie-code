@@ -45,6 +45,8 @@ type EngineResponseMsg struct {
 	ApplyError string `json:"error"`
 	// approval_request (Task 5): kind + path(FilePath) + diff; SessionID reused.
 	Kind string `json:"kind"`
+	// #6657: the edit this approval_request is about — echoed back on `approval`.
+	EditID string `json:"edit_id"`
 	// --- #5333 platform skill bridge -------------------------------------
 	// platform_skills: the hub's invokable-skills registry. Named distinctly from
 	// Skills (the engine's OWN local skills) -- they are different registries and

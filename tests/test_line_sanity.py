@@ -19,7 +19,7 @@ class _StubEngine:
 
 def _patch_read(monkeypatch, content, error=None, truncated=False):
     import archie_engine.workspace_ops as wo
-    monkeypatch.setattr(wo, "read_file", lambda root, path: (
+    monkeypatch.setattr(wo, "read_file", lambda root, path, **_kw: (
         {"error": error} if error else {"content": content, "truncated": truncated}))
 
 

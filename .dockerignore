@@ -1,0 +1,14 @@
+# Build context hygiene (#6657). The Dockerfile copies only pyproject.toml,
+# README.md, archie_engine/ and entrypoint.sh, so nothing below was ever baked —
+# this keeps .env/VCS/tests out of the upload and makes that explicit.
+.git/
+archie-tui/
+tests/
+scripts/
+*.egg-info/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.env
+.env.*
+.claude/

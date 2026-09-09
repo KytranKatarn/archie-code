@@ -37,7 +37,7 @@ func TestClientDeliversBurstWithoutLoss(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient(url)
+	client := NewClient(url, "")
 	if err := client.Connect(); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestClientPropagatesDisconnect(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient(url)
+	client := NewClient(url, "")
 	if err := client.Connect(); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSendMessageOptsIntoStreaming(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient(url)
+	client := NewClient(url, "")
 	if err := client.Connect(); err != nil {
 		t.Fatalf("connect: %v", err)
 	}

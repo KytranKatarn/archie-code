@@ -161,7 +161,7 @@ func TestParseEngineMessageBuildResult(t *testing.T) {
 func TestApprovalKeypressReportsDeliveryStatus(t *testing.T) {
 	// F.O.R.G.E. (#34): a disconnected operator pressing Y/N must be TOLD the
 	// approval was not delivered (engine denies by timeout), not silently dropped.
-	m := initialModel("ws://x")
+	m := initialModel("ws://x", "")
 	nm, _ := m.Update(EngineResponseMsg{Type: "approval_request", SessionID: "s1", FilePath: "a.go", Kind: "apply_edit"})
 	mm := nm.(model)
 	mm.connected = false
@@ -185,7 +185,7 @@ func TestApprovalKeypressReportsDeliveryStatus(t *testing.T) {
 func TestApplyEditApprovalFlow(t *testing.T) {
 	// Task 5 (engine-side gate): an approval_request from the engine stages a
 	// pending approval in the TUI; 'n' declines and clears it.
-	m := initialModel("ws://x")
+	m := initialModel("ws://x", "")
 	nm, _ := m.Update(EngineResponseMsg{Type: "approval_request", SessionID: "s1", FilePath: "a.go", Kind: "apply_edit"})
 	mm := nm.(model)
 	if mm.pendingApply == nil || mm.pendingApply.sessionID != "s1" || mm.pendingApply.path != "a.go" {

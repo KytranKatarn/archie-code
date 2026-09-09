@@ -1,5 +1,6 @@
 """Inbound HTTP server — accepts work dispatched from ARCHIE hub."""
 
+import hmac
 import logging
 from typing import Callable, Awaitable
 from aiohttp import web
@@ -59,7 +60,8 @@ class InboundServer:
         if not self.node_api_key:
             return False
         incoming = request.headers.get("X-Node-API-Key", "")
-        return incoming == self.node_api_key
+        # Constant-time: a plain == leaks match length via timing (#6657).
+        return hmac.compare_digest(incoming.encode(), self.node_api_key.encode())
 
     async def _handle_dispatch(self, request: web.Request) -> web.Response:
         """Handle POST /api/dispatch — process a hub-dispatched job."""
