@@ -1,5 +1,8 @@
 import pytest
 import pytest_asyncio
+
+TOKEN = "t-integ"
+AUTH = {"additional_headers": {"Authorization": f"Bearer {TOKEN}"}}  # #6657
 import json
 import asyncio
 import websockets
@@ -11,7 +14,7 @@ from archie_engine.hub import HubStatus
 
 @pytest_asyncio.fixture
 async def engine_no_hub(tmp_path):
-    config = EngineConfig(data_dir=tmp_path, ws_port=0)
+    config = EngineConfig(data_dir=tmp_path, ws_port=0, ws_token=TOKEN)
     eng = Engine(config)
     await eng.start()
     yield eng
@@ -25,6 +28,7 @@ async def engine_with_hub(tmp_path):
         ws_port=0,
         hub_url="http://fake-hub:3000",
         hub_api_key="test-key",
+        ws_token=TOKEN,
     )
     eng = Engine(config)
     # Mock connector to avoid real HTTP. Client mode: connectivity is proven
@@ -59,7 +63,7 @@ async def test_engine_with_hub_configured(engine_with_hub):
 @pytest.mark.asyncio
 async def test_hub_status_via_websocket(engine_no_hub):
     uri = f"ws://{engine_no_hub.config.ws_host}:{engine_no_hub.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({"type": "hub_status"}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "hub_status"
@@ -69,7 +73,7 @@ async def test_hub_status_via_websocket(engine_no_hub):
 @pytest.mark.asyncio
 async def test_hub_status_connected_via_websocket(engine_with_hub):
     uri = f"ws://{engine_with_hub.config.ws_host}:{engine_with_hub.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({"type": "hub_status"}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         # Client mode: connected, but no fleet node_id is minted.
@@ -83,6 +87,7 @@ async def test_client_connect_and_dispatch(tmp_path):
         data_dir=tmp_path,
         hub_url="http://192.168.1.200:3000",
         hub_api_key="test-key",
+        ws_token=TOKEN,
     )
     engine = Engine(config)
 

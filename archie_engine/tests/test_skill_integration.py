@@ -1,5 +1,8 @@
 import pytest
 import pytest_asyncio
+
+TOKEN = "t-integ"
+AUTH = {"additional_headers": {"Authorization": f"Bearer {TOKEN}"}}  # #6657
 import json
 import asyncio
 import websockets
@@ -15,7 +18,7 @@ async def engine(tmp_path):
     skills_dir.mkdir()
     (skills_dir / "hello.md").write_text("---\nname: hello\ndescription: Say hello\n---\nSay hello to the user.")
 
-    config = EngineConfig(data_dir=tmp_path, ws_port=0)
+    config = EngineConfig(data_dir=tmp_path, ws_port=0, ws_token=TOKEN)
     eng = Engine(config, custom_skill_dirs=[skills_dir])
     await eng.start()
     yield eng
@@ -25,7 +28,7 @@ async def engine(tmp_path):
 @pytest.mark.asyncio
 async def test_skill_list_via_websocket(engine):
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({"type": "list_skills"}))
         response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         assert response["type"] == "skills_list"
@@ -37,7 +40,7 @@ async def test_skill_list_via_websocket(engine):
 @pytest.mark.asyncio
 async def test_slash_command_routes_to_skill(engine):
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({
             "type": "message",
             "content": "/hello",
@@ -51,7 +54,7 @@ async def test_slash_command_routes_to_skill(engine):
 async def test_unknown_slash_falls_through(engine):
     """Unknown /command should fall through to normal intent parsing."""
     uri = f"ws://{engine.config.ws_host}:{engine.server.port}"
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, **AUTH) as ws:
         await ws.send(json.dumps({
             "type": "message",
             "content": "/nonexistent_skill_xyz",

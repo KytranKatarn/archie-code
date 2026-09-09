@@ -29,6 +29,16 @@ class EngineConfig:
     ws_port: int = field(default_factory=lambda: int(os.environ.get(
         "ARCHIE_WS_PORT", "9090"
     )))
+    # #6657 — bearer required on every ws handshake. Env-only on purpose (no /data
+    # key-file fallback, #6037). Empty ⇒ the server rejects every connection.
+    ws_token: str = field(default_factory=lambda: os.environ.get(
+        "ENGINE_WS_TOKEN", ""
+    ).strip())
+    # Browser Origins allowed to open the socket (CSV). Default none: browsers
+    # cannot send Authorization on a WebSocket, so they must go through a proxy.
+    ws_allowed_origins: list[str] = field(default_factory=lambda: [
+        o.strip() for o in os.environ.get("ENGINE_WS_ALLOWED_ORIGINS", "").split(",") if o.strip()
+    ])
 
     # Hub (optional — Plan 3)
     hub_url: str = field(default_factory=lambda: os.environ.get(

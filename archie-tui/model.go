@@ -17,6 +17,7 @@ import (
 // before it is sent as an apply_edit (Task 5).
 type pendingEdit struct {
 	sessionID string
+	editID    string // #6657: an approval must name the edit it resolves
 	path      string
 }
 
@@ -42,7 +43,7 @@ type model struct {
 	err          error
 }
 
-func initialModel(wsURL string) model {
+func initialModel(wsURL string, token string) model {
 	ti := textinput.New()
 	ti.Placeholder = "Type a message or /command..."
 	ti.Focus()
@@ -67,7 +68,7 @@ func initialModel(wsURL string) model {
 		statusPanel: views.NewStatusPanel(),
 		explorer:    views.NewFileExplorer(),
 		editor:      ed,
-		client:      NewClient(wsURL),
+		client:      NewClient(wsURL, token),
 	}
 }
 
@@ -753,7 +754,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "approval_request":
 			// Engine wants to write (Task 5): stage a pending approval; the y/n
 			// handler + the View banner drive the operator's decision.
-			m.pendingApply = &pendingEdit{sessionID: msg.SessionID, path: msg.FilePath}
+			m.pendingApply = &pendingEdit{sessionID: msg.SessionID, editID: msg.EditID, path: msg.FilePath}
 			m.chat.AddMessage("system", "Approve write to "+msg.FilePath+"?  [y] apply  [n] decline")
 		case "apply_cancelled":
 			m.chat.AddMessage("system", "apply declined: "+msg.FilePath)
@@ -851,7 +852,7 @@ func (m model) sendApproval(approved bool) {
 		return
 	}
 	if err := m.client.Send(map[string]interface{}{
-		"type": "approval", "session_id": m.pendingApply.sessionID, "approved": approved,
+		"type": "approval", "session_id": m.pendingApply.sessionID, "edit_id": m.pendingApply.editID, "approved": approved,
 	}); err != nil {
 		m.chat.AddMessage("system", "approval not delivered (send failed) \u2014 engine will deny by timeout")
 		return

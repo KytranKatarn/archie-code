@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -15,23 +16,32 @@ import (
 // between listener registrations and could deadlock the read loop entirely.
 type Client struct {
 	url      string
+	token    string // bearer sent on the handshake (#6657); empty ⇒ the engine refuses us
 	mu       sync.Mutex
 	conn     *websocket.Conn
 	messages chan map[string]interface{}
 	errs     chan error
 }
 
-func NewClient(url string) *Client {
+func NewClient(url string, token string) *Client {
 	return &Client{
 		url:      url,
+		token:    token,
 		messages: make(chan map[string]interface{}, 64),
 		errs:     make(chan error, 1),
 	}
 }
 
 func (c *Client) Connect() error {
-	conn, _, err := websocket.DefaultDialer.Dial(c.url, nil)
+	hdr := http.Header{}
+	if c.token != "" {
+		hdr.Set("Authorization", "Bearer "+c.token)
+	}
+	conn, resp, err := websocket.DefaultDialer.Dial(c.url, hdr)
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("engine rejected the token (HTTP 401) — set ARCHIE_ENGINE_TOKEN / --token to the engine's ENGINE_WS_TOKEN")
+		}
 		return fmt.Errorf("connect failed: %w", err)
 	}
 	c.mu.Lock()
