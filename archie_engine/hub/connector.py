@@ -44,18 +44,26 @@ class HubConnector:
         self.auth = auth
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
-    async def get(self, path: str, params: dict | None = None) -> dict:
-        """HTTP GET with auth headers. Returns parsed JSON or error dict."""
+    async def get(self, path: str, params: dict | None = None,
+                  timeout: int | None = None) -> dict:
+        """HTTP GET with auth headers. Returns parsed JSON or error dict.
+
+        timeout overrides the connector's 10s default for one call, the same
+        way post() already allows. A probe that must not read "unreachable" on
+        a slow-but-alive hub passes a longer wall (see auth_check).
+        """
         url = f"{self.hub_url}{path}"
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            async with aiohttp.ClientSession(timeout=_resolve_timeout(timeout, self.timeout)) as session:
                 async with session.get(url, headers=self.auth.get_headers(), params=params) as resp:
                     data = await resp.json()
                     if resp.status >= 400:
                         return {"error": data.get("error", f"HTTP {resp.status}"), "status": resp.status}
                     return data
         except Exception as e:
-            logger.warning("Hub GET %s failed: %s", path, e)
+            # str(TimeoutError()) is "", so the old line logged "failed: " and
+            # nothing else — the class name is what says WHY it failed.
+            logger.warning("Hub GET %s failed: %s: %s", path, type(e).__name__, e)
             return {"error": str(e), "status": 0}
 
     async def post(self, path: str, data: dict | None = None,
@@ -74,7 +82,7 @@ class HubConnector:
                         return {"error": result.get("error", f"HTTP {resp.status}"), "status": resp.status}
                     return result
         except Exception as e:
-            logger.warning("Hub POST %s failed: %s", path, e)
+            logger.warning("Hub POST %s failed: %s: %s", path, type(e).__name__, e)
             return {"error": str(e), "status": 0}
 
     # --- Hub Endpoint Methods ---
@@ -94,7 +102,13 @@ class HubConnector:
         cheapest read-only internal endpoint the engine already consumes via
         ``fetch_repair_issues``) so a bad credential surfaces as a real 401.
         """
-        return await self.get("/api/internal/repair/issues", params={"limit": 1})
+        # 30s, not the 10s default. Measured 2026-09-11: this endpoint answers in
+        # under a second from inside the engine container, yet the engine's log
+        # carried "Hub GET /api/internal/repair/issues failed: " — nothing after
+        # the colon, which is exactly what a TimeoutError prints. Under fleet
+        # load the hub's four gunicorn workers queue; a 10s wall turns that
+        # queueing into a false "hub unreachable" on the status line.
+        return await self.get("/api/internal/repair/issues", params={"limit": 1}, timeout=30)
 
     async def register_node(self, node_name: str, hostname: str | None = None,
                             gpu_model: str | None = None, gpu_vram_gb: float | None = None,

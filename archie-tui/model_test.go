@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/KytranKatarn/archie-tui/views"
 )
 
 // parseEngineMessage previously omitted every coding-surface field, so
@@ -155,6 +157,33 @@ func TestParseEngineMessageBuildResult(t *testing.T) {
 	})
 	if fail.BuildSuccess || fail.BuildStage != "test" || fail.ApplyError != "2 failed" {
 		t.Fatalf("failed build_result not parsed: %+v", fail)
+	}
+}
+
+// The TUI showed a six-minute "hmm, thinking..." spinner on a request the
+// engine answered in 0.1s (measured 2026-09-11, "list files in the workspace").
+// The companion switch set "done! ◡" on the response frame, and an
+// unconditional dispatch-target block below it immediately overwrote that with
+// the thinking state — so every response frame that carried dispatch_target
+// ended in a spinner nothing would ever clear.
+func TestResponseFrameIsNotClobberedByDispatchTarget(t *testing.T) {
+	m := initialModel("ws://x", "")
+	nm, _ := m.Update(EngineResponseMsg{Type: "response", SessionID: "s1", Content: "ok", DispatchTarget: "local"})
+	mm := nm.(model)
+	if mm.companion.State == views.StateThinking {
+		t.Fatal("a response frame must not leave the companion thinking")
+	}
+	if mm.companion.State != views.StateHappy {
+		t.Fatalf("a clean response frame should read done/happy, got %v", mm.companion.State)
+	}
+}
+
+func TestProgressFrameStillShowsWhereWorkWent(t *testing.T) {
+	m := initialModel("ws://x", "")
+	nm, _ := m.Update(EngineResponseMsg{Type: "progress", Detail: "dispatch -> platform"})
+	mm := nm.(model)
+	if mm.companion.State != views.StateThinking {
+		t.Fatalf("a progress frame should hold the thinking state, got %v", mm.companion.State)
 	}
 }
 
