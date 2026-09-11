@@ -25,11 +25,44 @@ TOOL_INTENTS = {"file_operation", "git_operation", "shell_command"}
 
 # LLM intents — route through Bridge when hub connected (agent-safe VRAM management)
 # Direct Ollama ONLY when hub is offline (Community tier / disconnected)
+#
+# ⚠️ EVERY VALUE HERE MUST BE A CAPABILITY THE PLATFORM ACTUALLY KNOWS.
+# A capability string is a REFERENCE, not a label: the platform resolves it through
+# CAPABILITY_DEPARTMENT_MAP to a department, then selects an agent by matching it
+# against agent_skills.skill_name. A string in NEITHER is not "a custom capability" —
+# it is a dead reference. Unmapped falls back to the Engineering default, and because
+# the scorer applies a -1.0 HARD PENALTY when a capability is requested and the
+# candidate does not hold it as a skill, the work lands on whichever agent scores
+# least badly rather than on anyone who can do it.
+#
+# Measured on the live platform 2026-09-11 — THREE of the five strings this module
+# could emit were dead references, unmapped AND held by ZERO agents:
+#     knowledge_search -> unmapped, 0 agents    (now: research, 8 agents, R&D)
+#     code_generation  -> unmapped, 0 agents    (now: code, 4 agents, Engineering)
+#     refactoring      -> unmapped, 0 agents    (now: code)
+# Only "general" (2 agents) and "code_review" (3 agents) resolved. Near-miss worth
+# knowing: "code-generation" WITH A HYPHEN does exist on 2 agents, which is most
+# likely how the underscored typo survived review.
+#
+# Same defect class as the platform's own `auto_document` bug (KB #261742) and the
+# 'news' residency profile that did not exist (KB #300145): a name in a constant that
+# nothing ever asserts resolves.
+#
+# ⛔ Do NOT add a value here without checking it against BOTH platform sources:
+#     CAPABILITY_DEPARTMENT_MAP  (services/department_coordinator.py)
+#     agent_skills.skill_name    (at least one non-decommissioned agent)
+# tests/test_engine_capability_resolution.py pins this so a new dead reference fails a
+# test instead of silently misrouting for months.
 LLM_INTENTS = {
     "conversation": "general",
-    "knowledge_query": "knowledge_search",
-    "code_task": "code_generation",
+    "knowledge_query": "research",
+    "code_task": "code",
 }
+
+# The COMPLETE set this module can emit, including every _resolve_capability branch.
+# Kept beside LLM_INTENTS deliberately: one list for the test to check, so there is no
+# second list to fall out of step with this one.
+EMITTED_CAPABILITIES = frozenset({"general", "research", "code", "code_review"})
 
 # Confidence below this triggers Claude escalation (when hub is available)
 ESCALATION_THRESHOLD = 0.2
@@ -100,6 +133,10 @@ class DispatchStrategy:
         lower = raw_input.lower()
         if any(kw in lower for kw in ("review", "audit", "check")):
             return "code_review"
+        # Refactoring is an EDIT, not an audit, so it wants the coder bench rather
+        # than a review capability. It used to return "refactoring", which no agent
+        # holds — see the LLM_INTENTS note above. "code" is the real capability with
+        # the deepest bench (4 agents), and F.O.R.G.E. holds it at Lv5.
         if any(kw in lower for kw in ("refactor", "clean", "simplify")):
-            return "refactoring"
-        return "code_generation"
+            return "code"
+        return base

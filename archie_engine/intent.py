@@ -19,9 +19,36 @@ INTENT_PATTERNS = {
         "patterns": [r"\bgit\b", r"\bcommit\b", r"\bbranch\b", r"\bmerge\b", r"\bdiff\b"],
         "priority": 7,
     },
+    # ⚠️ The keyword list used to be the WHOLE test, and it missed the most ordinary
+    # way anyone asks for code. Measured live 2026-09-11 against the running engine:
+    # "write a python function that reverses a linked list" matched NOTHING — "write
+    # code" is not "write a python function", and "create function" is not "a python
+    # function". Score 0, and per classify() "zero score never beats conversation", so
+    # a pure coding request classified as `conversation` and dispatched with the
+    # `general` capability. Task #6703 recorded it verbatim:
+    #     "general: write a python function that reverses a linked list"
+    #
+    # Literal keywords cannot carry this alone — the phrasing space is open. The added
+    # patterns pair an AUTHORING VERB with a CODE NOUN, and separately recognise a
+    # named language beside a code noun. That catches natural phrasing without
+    # swallowing questions ABOUT code: "what is the function of X" still scores higher
+    # on knowledge_query, which also outranks this on priority (10 > 6).
     "code_task": {
-        "keywords": ["fix", "implement", "refactor", "add feature", "write code", "debug", "bug", "error", "build", "create function", "modify", "update code"],
-        "patterns": [r"\bfix\b", r"\bimplement\b", r"\brefactor\b", r"\bbug\b", r"\bdebug\b", r"\berror\b"],
+        "keywords": [
+            "fix", "implement", "refactor", "add feature", "write code", "debug", "bug",
+            "error", "build", "create function", "modify", "update code",
+            # ordinary code nouns — a request naming one is nearly always code work
+            "function", "unit test", "algorithm", "snippet", "docstring", "type hint",
+        ],
+        "patterns": [
+            r"\bfix\b", r"\bimplement\b", r"\brefactor\b", r"\bbug\b", r"\bdebug\b", r"\berror\b",
+            # authoring verb + code noun — "write a python function", "add a method"
+            r"\b(?:write|create|add|generate|make|build|implement)\b[^.]{0,40}?"
+            r"\b(?:function|class|method|script|program|module|endpoint|component|test|parser|algorithm|query)\b",
+            # named language beside a code noun — "a python script that ..."
+            r"\b(?:python|javascript|typescript|java|rust|golang|go|sql|bash|shell|ruby|php|c\+\+)\b"
+            r"[^.]{0,30}\b(?:function|class|script|code|method|snippet|program|module)\b",
+        ],
         "priority": 6,
     },
     "shell_command": {
