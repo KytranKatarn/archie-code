@@ -795,10 +795,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "error":
 			m.companion.SetState(views.StateConcerned, "oh no... let me retry")
 		}
-		if msg.DispatchTarget == "platform" {
-			m.companion.SetState(views.StateThinking, "asking the crew ✦")
-		} else if msg.DispatchTarget == "local" {
-			m.companion.SetState(views.StateThinking, "hmm, thinking...")
+		// Dispatch-target hint — PROGRESS frames only. This block used to run for
+		// every frame type, so on a "response" frame it overwrote the "done! ◡"
+		// set in the switch above with the thinking state, and the TUI sat on a
+		// spinner for a reply the engine had already delivered (six minutes
+		// measured 2026-09-11 on a 0.1s engine answer). The final frame's state
+		// is owned by the switch; this only decorates the in-flight one.
+		if msg.Type == "progress" {
+			target := msg.DispatchTarget
+			if target == "" {
+				// Progress frames carry the target in the detail text
+				// ("… -> local" / "… -> platform"), not in the field.
+				if strings.HasSuffix(msg.Detail, "-> platform") {
+					target = "platform"
+				} else if strings.HasSuffix(msg.Detail, "-> local") {
+					target = "local"
+				}
+			}
+			if target == "platform" {
+				m.companion.SetState(views.StateThinking, "asking the crew ✦")
+			} else if target == "local" {
+				m.companion.SetState(views.StateThinking, "hmm, thinking...")
+			}
 		}
 		// Keep listening for next engine message
 		return m, m.listenCmd()

@@ -97,7 +97,51 @@ class CommandRouter:
         files = entities.get("files", [])
         path = files[0] if files else _extract_path(raw_input)
 
-        tool_call = {"tool": "file_ops", "operation": operation, "path": path}
+        # FileOpsTool's contract differs per operation (tools/file_ops.py:execute):
+        #     read / write / edit -> path=        glob -> pattern=        grep -> pattern= [+ path=]
+        # This handler used to pass path= for EVERYTHING, so glob and grep always
+        # received pattern='' and were refused ("Unacceptable pattern: ''"). Measured
+        # 2026-09-11 against the exact TUI input "list files in the workspace": the
+        # engine answered in 0.1s with that refusal — and because _extract_path fell
+        # back to the WHOLE SENTENCE as the path, no phrasing of "list files" could
+        # ever have succeeded from the TUI. (The six-minute spinner the TUI showed
+        # was a separate client bug; see archie-tui/model.go.)
+        if operation == "glob":
+            # "list files" carries no pattern. The workspace's top level is the honest
+            # default; rglob is deliberately NOT the default because FileOpsTool
+            # materialises the whole match list and the workspace volumes hold entire
+            # repo clones.
+            if path and any(ch in path for ch in "*?["):
+                pattern = path
+            elif path:
+                pattern = f"**/{path}"
+            else:
+                pattern = "*"
+            kwargs = {"operation": "glob", "pattern": pattern}
+            tool_call = {"tool": "file_ops", "operation": "glob", "pattern": pattern}
+        elif operation == "grep":
+            pattern = _extract_grep_pattern(raw_input)
+            if not pattern:
+                return {
+                    "success": False,
+                    "response": 'grep needs a search term — quote it, e.g. search for "needle" in src/',
+                    "tool_calls": [],
+                    "model_used": None,
+                }
+            kwargs = {"operation": "grep", "pattern": pattern, "path": path or None}
+            tool_call = {"tool": "file_ops", "operation": "grep", "pattern": pattern, "path": path}
+        else:
+            if not path:
+                # Say so, rather than handing FileOpsTool an empty path and letting it
+                # resolve to the workspace root.
+                return {
+                    "success": False,
+                    "response": f"{operation} needs a file path — I could not find one in the request.",
+                    "tool_calls": [],
+                    "model_used": None,
+                }
+            kwargs = {"operation": operation, "path": path}
+            tool_call = {"tool": "file_ops", "operation": operation, "path": path}
 
         # Deny-by-default scope guard (ADR-003): the engine may only MUTATE files
         # inside its allowed scope. read/glob/grep stay bounded by the tool's own
@@ -113,7 +157,7 @@ class CommandRouter:
                 "model_used": None,
             }
 
-        result = await self.tools.execute("file_ops", operation=operation, path=path)
+        result = await self.tools.execute("file_ops", **kwargs)
 
         return {
             "success": result.success,
@@ -292,10 +336,33 @@ class CommandRouter:
 # ------------------------------------------------------------------
 
 def _extract_path(text: str) -> str:
-    """Best-effort path extraction from a raw input string."""
+    """Best-effort path extraction from a raw input string.
+
+    Returns "" when nothing path-like is present. This used to fall back to
+    ``text.strip()`` — the ENTIRE SENTENCE — so "list files in the workspace" was
+    handed to the file tool as a path (measured 2026-09-11). The caller decides
+    what an absent path means for its operation; this function must not invent one.
+    """
     # Match anything that looks like a file path (word chars + . / -)
     match = re.search(r"[\w./\\-]+\.\w+", text)
-    return match.group(0) if match else text.strip()
+    return match.group(0) if match else ""
+
+
+def _extract_grep_pattern(text: str) -> str:
+    """The search term for a grep request: a quoted string if there is one,
+    else the word after "grep"/"search for"/"search". "" when neither is present —
+    FileOpsTool refuses an empty pattern, and the caller turns "" into a clear
+    message instead of that refusal."""
+    quoted = re.search(r"[\"'`]([^\"'`]+)[\"'`]", text)
+    if quoted:
+        return quoted.group(1).strip()
+    m = re.search(r"\b(?:grep|search(?:\s+for)?)\s+(?:for\s+)?([^\s]+)", text, re.IGNORECASE)
+    if m:
+        term = m.group(1).strip().strip(",.;:")
+        # "search in src/" names a place, not a term.
+        if term.lower() not in ("in", "the", "for", "inside", "within"):
+            return term
+    return ""
 
 
 def _extract_content(resp: dict) -> str:
