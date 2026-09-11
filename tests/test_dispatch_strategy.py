@@ -14,14 +14,19 @@ def _intent(t, conf=0.9, raw=""):
 def test_code_task_routes_to_platform_when_hub_up():
     d = DispatchStrategy(hub_available=True).decide(_intent("code_task", raw="implement feature X"))
     assert d.target == DispatchTarget.PLATFORM
-    assert d.capability == "code_generation"
+    # Was "code_generation" — a capability the platform does not map and NO agent holds
+    # as a skill. These assertions passed for months while the dispatch they describe
+    # reached nobody: they compared the string to a literal, and never asked whether the
+    # string RESOLVES. See test_engine_capability_resolution.py, which does ask.
+    assert d.capability == "code"
 
 
 def test_code_task_capability_resolution():
     s = DispatchStrategy(hub_available=True)
     assert s.decide(_intent("code_task", raw="review this diff")).capability == "code_review"
-    assert s.decide(_intent("code_task", raw="refactor the module")).capability == "refactoring"
-    assert s.decide(_intent("code_task", raw="write a function")).capability == "code_generation"
+    # Was "refactoring" — also a dead reference (unmapped, 0 agents).
+    assert s.decide(_intent("code_task", raw="refactor the module")).capability == "code"
+    assert s.decide(_intent("code_task", raw="write a function")).capability == "code"
 
 
 def test_knowledge_and_conversation_route_to_platform():
@@ -35,7 +40,7 @@ def test_knowledge_and_conversation_route_to_platform():
 def test_llm_intent_falls_back_to_local_when_hub_down():
     d = DispatchStrategy(hub_available=False).decide(_intent("code_task"))
     assert d.target == DispatchTarget.LOCAL
-    assert d.capability == "code_generation"
+    assert d.capability == "code"
 
 
 # --- tool intents are always local (no LLM) ---
