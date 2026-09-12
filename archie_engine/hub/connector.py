@@ -1,7 +1,9 @@
 """Hub connector — REST API client for ARCHIE platform."""
 
+import asyncio
 import logging
 import os
+import time
 
 import aiohttp
 from archie_engine.hub.auth import HubAuth
@@ -20,6 +22,25 @@ try:
     _DHQ_COMPLETE_TIMEOUT = int(os.environ.get("ARCHIE_DHQ_TIMEOUT", "900"))
 except (TypeError, ValueError):
     _DHQ_COMPLETE_TIMEOUT = 900  # ignore a malformed override; keep the safe default
+
+
+# How long a chat turn will wait for a delegated answer before falling back to
+# the receipt (#6733). Measured 2026-09-12 over the 20 most recent delegations:
+# median 27s from submit to the first work note, max 160s (the delegate_task
+# worker polls on a 30s cycle, then the fleet agent runs inference). 180s covers
+# that tail with margin; past it the answer is not arriving inside this turn.
+#
+# This is a WALL, not a promise: exceeding it is not an error, it returns the
+# same receipt the engine has always returned, so nothing regresses.
+try:
+    _DELEGATION_POLL_SEC = int(os.environ.get("ARCHIE_DELEGATION_POLL_SEC", "180"))
+except (TypeError, ValueError):
+    _DELEGATION_POLL_SEC = 180  # ignore a malformed override; keep the safe default
+
+# 3s: the hub side is one indexed lookup plus three small subselects, so ~60
+# requests across the whole wall is negligible, and it keeps the turn from
+# sitting idle for a large fraction of a second-scale answer.
+_DELEGATION_POLL_INTERVAL_SEC = 3.0
 
 
 def _resolve_timeout(timeout, default):
@@ -179,16 +200,138 @@ class HubConnector:
             "limit": limit,
         })
 
+    async def delegation_status(self, task_id: int) -> dict:
+        """One read of a delegated task's state (#6733).
+
+        GET /api/internal/delegation/<id>/status -> {status, terminal, result,
+        result_source, failure, work_notes, ...}. `result` is the ANSWER, named
+        by the hub: which work note carries it depends on the execution path and
+        the hub owns that rule, so the engine never re-derives it.
+        """
+        return await self.get(f"/api/internal/delegation/{task_id}/status")
+
+    async def await_delegation(self, task_id: int,
+                               wall_sec: int | None = None,
+                               interval_sec: float | None = None) -> dict:
+        """Poll a delegated task until it settles or the wall expires (#6733).
+
+        Returns {settled, status, result, result_source, failure, elapsed_sec}.
+        `settled` is True ONLY when the hub said the task is terminal — never on
+        a timeout, and never on a guess made here.
+
+        Three deliberate choices:
+
+        * **The hub decides what "finished" means.** `terminal` comes back in
+          the payload. A poller that keeps its own copy of the status vocabulary
+          drifts the moment a status is added, and the failure is silent: it
+          polls a finished task forever, or stops early on one still running.
+
+        * **A hub without the `terminal` key is not polled at all.** The engine
+          image and the platform deploy independently, so an older hub can
+          answer this route without #6733's fields. Polling it for 180s would
+          hang every delegated turn waiting for a key that will never appear.
+          One probe, then fall back.
+
+        * **A transient error does not abort the poll.** `get()` RETURNS an
+          error dict rather than raising, and the hub restarting mid-poll is a
+          real event. Keep asking until the wall — the wall is the bound, and
+          the fallback is the receipt, which is exactly today's behaviour.
+        """
+        # Both bounds resolve from the module constants HERE rather than as
+        # default arguments, which bind once at import and can never be moved
+        # afterwards -- so a caller, an env override, or a test can change the
+        # pacing without reaching into the asyncio module itself.
+        wall = _DELEGATION_POLL_SEC if wall_sec is None else wall_sec
+        if interval_sec is None:
+            interval_sec = _DELEGATION_POLL_INTERVAL_SEC
+        # Bound the loop by a POLL COUNT derived from the wall, not by reading a
+        # clock each pass. Two reasons, and the second is the one that bit:
+        #   * it is deterministic -- the same wall always does the same work, so
+        #     the loop is testable without stubbing time itself;
+        #   * a clock-read exit is only as reliable as the clock. The first cut
+        #     of this loop exited on `elapsed + interval >= wall`, which spins
+        #     FOREVER the moment anything stops the clock advancing.
+        # `max(1, ...)` so wall=0 means "don't wait", not "don't look" -- a
+        # known-tool shortcut can settle in ~1s and the answer may already be
+        # there on the first read.
+        # Float ceil: `-(-a // b)`. Done in ints this divides by ZERO for any
+        # sub-second interval, because int(0.5) == 0.
+        #
+        # The DIVISOR and the NAP are deliberately separate. Clamping the divisor
+        # away from zero keeps the poll count finite; clamping the nap the same
+        # way would silently turn "poll as fast as you can" into a 1s wait, so an
+        # interval of 0 must still sleep 0 -- the count is what bounds the loop.
+        nap = max(0.0, float(interval_sec or 0.0))
+        divisor = nap if nap > 0 else 1.0
+        max_polls = max(1, int(-(-float(wall) // divisor)))
+        started = time.monotonic()  # for REPORTING only; never a loop condition
+        supported = None  # unknown until the first successful read
+
+        for attempt in range(max_polls):
+            state = await self.delegation_status(task_id)
+            elapsed = time.monotonic() - started
+
+            if isinstance(state, dict) and "error" not in state:
+                if supported is None:
+                    supported = "terminal" in state
+                    if not supported:
+                        logger.info(
+                            "Hub has no delegation `terminal` field (pre-#6733) — "
+                            "not polling task %s", task_id,
+                        )
+                        return {
+                            "settled": False,
+                            "reason": "unsupported",
+                            "status": state.get("status"),
+                            "elapsed_sec": round(elapsed, 1),
+                        }
+                if state.get("terminal"):
+                    return {
+                        "settled": True,
+                        "status": state.get("status"),
+                        "result": state.get("result"),
+                        "result_source": state.get("result_source"),
+                        "failure": state.get("failure"),
+                        "capability": state.get("capability"),
+                        "elapsed_sec": round(elapsed, 1),
+                    }
+            else:
+                logger.debug("delegation status %s not readable yet: %s", task_id, state)
+
+            # Sleep BETWEEN reads, never after the last one -- otherwise every
+            # unsettled turn pays one extra interval for nothing.
+            if attempt + 1 < max_polls:
+                await asyncio.sleep(nap)
+
+        return {
+            "settled": False,
+            "reason": "timeout",
+            "elapsed_sec": round(time.monotonic() - started, 1),
+        }
+
     async def dispatch(self, prompt: str, model: str | None = None,
                        agent_target: str | None = None, user_context: dict | None = None,
-                       conversation: list | None = None) -> dict:
+                       conversation: list | None = None,
+                       await_result: bool = True) -> dict:
         """Delegate a task to the hub's agent team via the internal delegation
         surface (the modern external→DHQ path; Starbase's /api/archie/chat is gone).
 
-        Non-blocking: submits the task and returns immediately with the task id.
-        The Department-HQ dispatcher routes it (welfare/cost/agent selection) and
-        the result streams to the platform's Live Dispatch feed + work_notes.
-        Returns the router contract {response, agent_name, model} or {error}.
+        Submits to Department HQ, which routes it (welfare/cost/agent selection),
+        then WAITS a bounded time for the answer and returns it (#6733).
+
+        Until #6733 this returned the submit receipt and nothing else, so the
+        assistant turn recorded in the engine's session history was
+        "Delegated to the A.R.C.H.I.E. team as task #N" — the answer landed in
+        work_notes where the conversation could not see it, and a TUI follow-up
+        like "expand on that" had nothing to expand. The result is now the reply
+        when it arrives inside the wall.
+
+        `await_result=False` restores the old fire-and-forget behaviour for a
+        caller that genuinely does not want to block.
+
+        Returns the router contract {response, agent_name, model} or {error},
+        plus `task_id` and `settled` (True when the reply is the real answer,
+        False when it is the receipt).
         """
         # agent_target arrives as "capability:<cap>" from the router; map it.
         capability = "code"
@@ -208,7 +351,8 @@ class HubConnector:
         if "error" in result:
             return result
         task_id = result.get("task_id")
-        return {
+
+        receipt = {
             "response": (
                 f"Delegated to the A.R.C.H.I.E. team as task #{task_id} "
                 f"(capability: {capability}). Track it in the Live Dispatch feed."
@@ -216,6 +360,49 @@ class HubConnector:
             "agent_name": "A.R.C.H.I.E.",
             "model": "delegated",
             "task_id": task_id,
+            "settled": False,
+        }
+        if not await_result or not task_id:
+            return receipt
+
+        settled = await self.await_delegation(task_id)
+        if not settled.get("settled"):
+            logger.info(
+                "Delegated task %s not settled in %ss (%s) — returning the receipt",
+                task_id, settled.get("elapsed_sec"), settled.get("reason"),
+            )
+            return receipt
+
+        answer = settled.get("result")
+        failure = settled.get("failure")
+
+        if isinstance(answer, str) and answer.strip():
+            response = answer
+        elif isinstance(failure, str) and failure.strip():
+            # Say what went wrong. A failed delegation reported as a receipt
+            # leaves the user waiting for an answer that is never coming.
+            response = (
+                f"The A.R.C.H.I.E. team could not complete task #{task_id} "
+                f"({settled.get('status')}): {failure}"
+            )
+        else:
+            # Terminal with nothing to show. Do NOT invent an empty answer —
+            # an empty string presented as the reply is indistinguishable from
+            # "the agent said nothing", which is the masking this change removes.
+            logger.warning(
+                "Delegated task %s is %s but carries no result note",
+                task_id, settled.get("status"),
+            )
+            return receipt
+
+        return {
+            "response": response,
+            "agent_name": "A.R.C.H.I.E.",
+            "model": "delegated",
+            "task_id": task_id,
+            "settled": True,
+            "delegation_status": settled.get("status"),
+            "result_source": settled.get("result_source"),
         }
 
     async def list_agents(self) -> dict:

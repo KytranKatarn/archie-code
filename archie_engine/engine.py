@@ -1131,6 +1131,18 @@ class Engine:
                 "stage": "dispatch",
                 "detail": f"{intent['type']} -> {decision.target.value}",
             })
+            if decision.target == DispatchTarget.PLATFORM:
+                # A delegated turn now WAITS for the team's answer instead of
+                # returning the submit receipt (#6733), and that wait is bounded
+                # at ~180s. Say so: a silent spinner for minutes reads as a hang,
+                # and the one thing the client can be told for free is that the
+                # turn is queued behind a fleet agent, not stuck.
+                await send({
+                    "type": "progress",
+                    "session_id": session_id,
+                    "stage": "delegated",
+                    "detail": "waiting for the A.R.C.H.I.E. team to answer",
+                })
 
         # Build context
         context = await self.sessions.build_context(session_id)
@@ -1157,6 +1169,11 @@ class Engine:
             "intent": intent["type"],
             "dispatch_target": decision.target.value,
             "dispatch_reason": decision.reason,  # surfaced inline by archie-tui (#4264 PR 4)
+            # False on a delegated turn whose answer did not arrive inside the
+            # wall -- `content` is then the submit receipt, not a reply (#6733).
+            # Absent/True for every local turn, so a client that ignores it is
+            # unchanged.
+            "settled": result.get("settled", True),
             "agent": result.get("agent_name") or "",
             "node": result.get("node") or "",
             "model": result.get("model_used") or "",
