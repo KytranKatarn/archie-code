@@ -12,6 +12,55 @@ from archie_engine.scope_guard import is_in_scope
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Conversation context for platform dispatch (#6729)
+# ---------------------------------------------------------------------------
+# `user_context` above carries history_LENGTH — a count. For a long time that
+# was the ONLY history signal that crossed to the platform, so a delegated
+# agent was told "there are 11 earlier messages" and shown none of them.
+# Measured on platform task #6727: one turn after answering "Titan", asked
+# "Is it bigger than the planet Mercury? ...name it explicitly", the agent
+# could not name it and answered "No" — the opposite of the truth. It did not
+# ask what "it" meant, because nothing told it a referent existed.
+#
+# history_length is deliberately KEPT: it is cheap, and it lets the receiver
+# distinguish "no history" from "history trimmed to fit".
+
+_CONV_MAX_TURNS = 6
+_CONV_MAX_CHARS_PER_TURN = 800
+# Dialogue only. system/tool rows are engine bookkeeping and would spend the
+# budget without helping a 7B resolve a pronoun.
+_CONV_ROLES = ("user", "assistant")
+
+
+def recent_conversation(history: object, max_turns: int = _CONV_MAX_TURNS) -> list[dict]:
+    """The last few dialogue turns as [{"role", "content"}], oldest-first.
+
+    Bounded HERE as well as on the platform: both ends own the 7B fleet's
+    context budget, and the receiver cannot un-send an oversized payload.
+
+    Never raises — history is best-effort context, and a malformed row must
+    cost the caller nothing more than that row.
+    """
+    if not isinstance(history, (list, tuple)):
+        return []
+    out: list[dict] = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        role, content = row.get("role"), row.get("content")
+        if role not in _CONV_ROLES or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        if len(content) > _CONV_MAX_CHARS_PER_TURN:
+            content = content[:_CONV_MAX_CHARS_PER_TURN] + " […truncated]"
+        out.append({"role": role, "content": content})
+    # Newest turns are what a follow-up refers to; keep those, drop the opening.
+    return out[-max_turns:] if max_turns > 0 else out
+
+
 class CommandRouter:
     def __init__(self, tools: ToolRegistry, inference: InferenceClient,
                  default_model: str = "archie:7b",
@@ -218,6 +267,7 @@ class CommandRouter:
             prompt=raw_input,
             agent_target=f"capability:{capability}" if capability else None,
             user_context=user_context,
+            conversation=recent_conversation(context.get("history")),
         )
 
         duration_ms = int((time.monotonic() - start) * 1000)

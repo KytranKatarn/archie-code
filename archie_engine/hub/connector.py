@@ -180,7 +180,8 @@ class HubConnector:
         })
 
     async def dispatch(self, prompt: str, model: str | None = None,
-                       agent_target: str | None = None, user_context: dict | None = None) -> dict:
+                       agent_target: str | None = None, user_context: dict | None = None,
+                       conversation: list | None = None) -> dict:
         """Delegate a task to the hub's agent team via the internal delegation
         surface (the modern external→DHQ path; Starbase's /api/archie/chat is gone).
 
@@ -194,10 +195,15 @@ class HubConnector:
         if agent_target:
             capability = agent_target.split(":", 1)[1] if agent_target.startswith("capability:") else agent_target
             capability = capability or "code"
+        # `conversation` is TOP-LEVEL, never folded into `args`: the platform
+        # renders args as json.dumps(payload)[:500] — truncated raw JSON — which
+        # would silently drop most of a conversation and hand the model a
+        # fragment cut mid-token (#6729).
         result = await self.post("/api/internal/delegation/submit", data={
             "capability": capability,
             "reason": prompt,
             "args": user_context or {},
+            "conversation": conversation or [],
         })
         if "error" in result:
             return result
