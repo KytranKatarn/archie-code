@@ -298,6 +298,12 @@ class CommandRouter:
             "model_used": model_used,
             "agent_name": agent_name,
             "node": resp.get("node", ""),
+            # True when `response_text` is the team's actual answer rather than
+            # the submit receipt (#6733). The caller records `response` as the
+            # assistant turn either way; this says which one it got, so a client
+            # can mark an unsettled turn instead of presenting a receipt as a reply.
+            "settled": bool(resp.get("settled")),
+            "task_id": resp.get("task_id"),
         }
 
     # ------------------------------------------------------------------
