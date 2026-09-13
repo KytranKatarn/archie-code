@@ -5,8 +5,19 @@ import re
 # keyword routing table
 INTENT_PATTERNS = {
     "knowledge_query": {
-        "keywords": ["what does", "how does", "explain", "what is", "describe", "documentation", "how to", "how do", "why does", "why is", "what are", "tell me about"],
-        "patterns": [r"\bwhat\s+(?:does|is|are|models|the|a)\b", r"\bhow\s+(?:do|does|to|did|can)\b", r"\bexplain\b", r"\bdescribe\b", r"\bwhy\s+(?:does|is|are|do)\b", r"\btell\s+me\b"],
+        "keywords": ["what does", "how does", "explain", "what is", "describe", "documentation", "how to", "how do", "why does", "why is", "what are", "tell me about",
+                     # the KB as an OBJECT. "Search the knowledge base ..." is a question,
+                     # not a filesystem search -- see the second pattern below (#6724).
+                     "knowledge base", "knowledge-base"],
+        "patterns": [r"\bwhat\s+(?:does|is|are|models|the|a)\b", r"\bhow\s+(?:do|does|to|did|can)\b", r"\bexplain\b", r"\bdescribe\b", r"\bwhy\s+(?:does|is|are|do)\b", r"\btell\s+me\b",
+                     # A LOOKUP VERB whose object is the knowledge base / memory / mistakes.
+                     # Without this, "Search the knowledge base for X" scores only on
+                     # file_operation's "search" and is handled as a filesystem grep --
+                     # locally, with no LLM, no task row and nothing in the Live Dispatch
+                     # feed. The request vanishes, which is worse than failing (#6724).
+                     r"\b(?:search|find|look\s*up|recall|check|query|dig\s+up)\b[^.]{0,50}?"
+                     r"\b(?:knowledge[\s-]*base|kb|memory|memories|mistakes?|vault|"
+                     r"documentation|docs|prior\s+art|past\s+sessions?)\b"],
         "priority": 10,
     },
     "file_operation": {
@@ -59,6 +70,47 @@ INTENT_PATTERNS = {
 }
 
 
+def _keyword_regex(keyword: str) -> "re.Pattern":
+    """Word-boundary matcher for one keyword, tolerating simple inflections.
+
+    `keyword in text` is a SUBSTRING test, and that is how a knowledge-base question
+    became a filesystem search (#6724): the file_operation keyword "cat" matched inside
+    "fabri*cat*ed", handing file_operation two hits (0.6) against knowledge_query's 0.5.
+    Measured — 13 of the table's keywords fire inside ordinary English:
+        cat -> fabricated, category, catalog      log  -> technology, logic, login
+        run -> prune, truncate                    read -> already, thread, spreadsheet
+        diff -> difficult, different              merge-> emerged, emergency
+
+    The optional suffix is deliberate: a bare `\bbug\b` would stop matching "bugs",
+    and `\berror\b` would stop matching "errors", so a strict boundary fix would trade
+    one silent misroute for another. Allowing s/es/ed/ing keeps the inflections that
+    genuinely mean the keyword while still refusing the unrelated words above.
+
+    Leading/trailing boundaries are applied only next to alphanumerics, so a keyword
+    like "c++" is matched literally rather than by a boundary that can never hold.
+    """
+    escaped = re.escape(keyword)
+    lead = r"\b" if keyword[:1].isalnum() else ""
+    trail = r"(?:s|es|ed|ing|ings)?\b" if keyword[-1:].isalnum() else ""
+    return re.compile(lead + escaped + trail)
+
+
+# "the object of this lookup is the knowledge base / our memory", compiled once.
+# Shared by the knowledge_query pattern list and the shadow rule in classify() so the
+# two can never drift into disagreeing about what a KB question looks like.
+_KB_OBJECT_RE = re.compile(
+    r"\b(?:search|find|look\s*up|recall|check|query|dig\s+up)\b[^.]{0,50}?"
+    r"\b(?:knowledge[\s-]*base|kb|memory|memories|mistakes?|vault|"
+    r"documentation|docs|prior\s+art|past\s+sessions?)\b"
+)
+
+# Compiled once at import — classify() runs on every turn.
+_KEYWORD_RES = {
+    name: [_keyword_regex(k) for k in cfg["keywords"]]
+    for name, cfg in INTENT_PATTERNS.items()
+}
+
+
 class IntentParser:
     def classify(self, text: str) -> dict:
         """Classify user input into an intent type with confidence score."""
@@ -70,7 +122,7 @@ class IntentParser:
         for intent_type, config in INTENT_PATTERNS.items():
             score = 0.0
             # Keyword matching
-            keyword_hits = sum(1 for kw in config["keywords"] if kw in text_lower)
+            keyword_hits = sum(1 for rx in _KEYWORD_RES[intent_type] if rx.search(text_lower))
             if keyword_hits > 0:
                 score += min(keyword_hits * 0.3, 0.6)
             # Regex pattern matching
@@ -85,6 +137,20 @@ class IntentParser:
                 best_score = score
                 best_type = intent_type
                 best_priority = priority
+
+        # A lookup whose OBJECT is the knowledge base is a question, whatever verb it
+        # opened with. This SHADOWS the file layer rather than out-scoring it, because
+        # scoring cannot settle it: "search memory for what we decided" gives
+        # file_operation 0.30 from the bare verb "search" and knowledge_query only 0.20,
+        # so the KB reading loses on arithmetic while being obviously right. #6724 asked
+        # for exactly this shadow.
+        #
+        # Scoped deliberately to the TOOL intents. A code_task that happens to mention
+        # memory ("write a function that frees the memory buffer") is left alone --
+        # those do not silently vanish, which is the harm being prevented here.
+        if best_type in ("file_operation", "shell_command") and _KB_OBJECT_RE.search(text_lower):
+            best_type = "knowledge_query"
+            best_score = max(best_score, 0.6)
 
         # Confidence: scale 0-1, conversation fallback gets low confidence
         confidence = min(best_score, 1.0) if best_type != "conversation" else 0.2
