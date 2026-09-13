@@ -490,6 +490,65 @@ class Engine:
 
             return {"type": "platform_skill_status", **await platform_skill_status(msg.get("task_id"))}
 
+        # Dev HQ projects/tasks. Same fail-soft contract as the skills above: devhq
+        # returns {"error": ...} rather than raising, so a hub outage or an ungranted
+        # scope degrades the TUI instead of dropping the websocket.
+        if msg_type == "devhq_projects":
+            from archie_engine.devhq import list_projects
+
+            return {
+                "type": "devhq_projects",
+                **await list_projects(status=msg.get("status"), limit=int(msg.get("limit") or 25)),
+            }
+
+        if msg_type == "devhq_tasks":
+            from archie_engine.devhq import list_tasks
+
+            return {
+                "type": "devhq_tasks",
+                **await list_tasks(
+                    project_id=msg.get("project_id"),
+                    status=msg.get("status"),
+                    q=msg.get("q"),
+                    min_priority=msg.get("min_priority"),
+                    limit=int(msg.get("limit") or 25),
+                ),
+            }
+
+        if msg_type == "devhq_task":
+            from archie_engine.devhq import get_task
+
+            return {"type": "devhq_task", **await get_task(msg.get("task_id"))}
+
+        if msg_type == "devhq_task_create":
+            from archie_engine.devhq import create_task
+
+            return {
+                "type": "devhq_task_create",
+                **await create_task(
+                    project_id=msg.get("project_id"),
+                    title=msg.get("title", ""),
+                    description=msg.get("description", "") or "",
+                    priority=int(msg.get("priority") or 5),
+                ),
+            }
+
+        if msg_type == "devhq_task_status":
+            from archie_engine.devhq import set_task_status
+
+            return {
+                "type": "devhq_task_status",
+                **await set_task_status(msg.get("task_id"), msg.get("status", "")),
+            }
+
+        if msg_type == "devhq_task_note":
+            from archie_engine.devhq import add_task_note
+
+            return {
+                "type": "devhq_task_note",
+                **await add_task_note(msg.get("task_id"), msg.get("note", "")),
+            }
+
         if msg_type == "approval":
             return await self._handle_approval(msg)
 
