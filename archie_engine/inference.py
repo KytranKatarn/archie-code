@@ -111,11 +111,31 @@ class InferenceClient:
 
     async def _hub_complete(
         self, prompt: str, system: str | None, model: str | None
-    ) -> str | None:
-        """One dispatcher-routed completion. Returns text, or None to fall back.
+    ) -> dict | None:
+        """One dispatcher-routed completion. Returns a usage dict, or None to fall back.
 
         NEVER raises — every failure path returns None so the caller falls back rather
         than losing the work.
+
+        ## Why this returns a dict and not the text (#6775)
+
+        It returned ``str | None`` until 2026-09-15, which meant the hub's reply was
+        parsed for ``response`` and **everything else was discarded** — including the
+        token counts. Measured over 7 days, Lane 3 logged:
+
+            archie_engine | engine/archie:7b | 20 runs | 20 ok | 0 TOKENS
+            archie_engine | mistral:7b       |  2 runs |  2 ok | 3019 tokens
+
+        20 of 22 runs reported nothing, so the platform's own builder was invisible to
+        Token Economy and — the reason it matters — **un-comparable** against the codex
+        and opencode lanes, which are measured via omniroute's call log. You cannot
+        evolve a coder against rivals it cannot be scored beside.
+
+        ⚠️ TWO halves, and NEITHER works alone. The hub's non-streaming
+        ``/api/internal/dhq/chat`` also had to start SENDING the counts (archie-platform
+        #3385) — its streaming sibling always did. If that PR is not deployed, the keys
+        below are simply absent and every caller degrades to 0, exactly as before. That
+        is deliberate: a missing count reads as "unknown", never as an error.
         """
         payload: dict = {
             "prompt": prompt,
@@ -145,7 +165,20 @@ class InferenceClient:
                     data = await resp.json()
             if not data.get("success"):
                 return None
-            return (data.get("response") or "").strip() or None
+            text = (data.get("response") or "").strip()
+            if not text:
+                return None
+            # Absent keys -> 0. An older hub (pre-#3385) sends none of these, and that
+            # must degrade to "unknown", never raise on the inference path.
+            return {
+                "text": text,
+                "prompt_tokens": int(data.get("prompt_tokens") or 0),
+                "completion_tokens": int(data.get("completion_tokens") or 0),
+                # The hub reports what the dispatcher ACTUALLY placed the work on, which
+                # is the useful value precisely because we decline to pin a model.
+                "model_used": data.get("model_used"),
+                "agent_name": data.get("agent_name"),
+            }
         except Exception as e:  # noqa: BLE001 - a hub outage must never break Lane 3
             logger.info("[inference] hub unreachable (%s) — falling back to direct", e)
             return None
@@ -184,9 +217,19 @@ class InferenceClient:
     ) -> dict:
         """Non-streaming text generation. Dispatcher first, direct fallback."""
         if self._should_use_hub():
-            text = await self._hub_complete(prompt, system, model)
-            if text is not None:
-                return {"response": text, "model": model, "done": True, "_via": "hub"}
+            hub = await self._hub_complete(prompt, system, model)
+            if hub is not None:
+                return {
+                    "response": hub["text"],
+                    # What the dispatcher actually PLACED it on, falling back to what we
+                    # asked for. We decline to pin, so these legitimately differ.
+                    "model": hub.get("model_used") or model,
+                    "done": True,
+                    "_via": "hub",
+                    "prompt_tokens": hub["prompt_tokens"],
+                    "completion_tokens": hub["completion_tokens"],
+                    "agent_name": hub.get("agent_name"),
+                }
 
         payload: dict = {"model": model, "prompt": prompt, "stream": False}
         if system:
@@ -218,13 +261,16 @@ class InferenceClient:
         """
         if self._should_use_hub(format):
             body, sys_from_msgs = self._flatten(messages)
-            text = await self._hub_complete(body, system or sys_from_msgs, model)
-            if text is not None:
+            hub = await self._hub_complete(body, system or sys_from_msgs, model)
+            if hub is not None:
                 return {
-                    "message": {"role": "assistant", "content": text},
-                    "model": model,
+                    "message": {"role": "assistant", "content": hub["text"]},
+                    "model": hub.get("model_used") or model,
                     "done": True,
                     "_via": "hub",
+                    "prompt_tokens": hub["prompt_tokens"],
+                    "completion_tokens": hub["completion_tokens"],
+                    "agent_name": hub.get("agent_name"),
                 }
 
         payload: dict = {"model": model, "messages": messages, "stream": False}
