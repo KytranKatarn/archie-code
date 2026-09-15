@@ -56,6 +56,14 @@ logger = logging.getLogger(__name__)
 
 _HUB_PATH = "/api/internal/dhq/chat"
 
+# Providers Lane 3 can route through. "fleet" is the default and the sovereign path;
+# "omniroute" exists so archie-tui can be benchmarked against the codex/opencode lanes
+# on the SAME model. See InferenceClient.__init__ for what omniroute bypasses.
+_PROVIDERS = ("fleet", "omniroute")
+# OpenAI-compatible. omniroute also serves /responses, but chat/completions is the
+# shape both other lanes use, so benchmarking stays like-for-like.
+_OMNIROUTE_PATH = "/chat/completions"
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -96,6 +104,57 @@ class InferenceClient:
         self.module_id = module_id
         self.pin_model = _env_flag("ARCHIE_ENGINE_PIN_MODEL", False)
 
+        # ---- provider selection (#6776) -------------------------------------
+        # "fleet" (DEFAULT) = the sovereign path: hub -> department_dispatcher ->
+        #   local GPUs. Unchanged behaviour; this is what Lane 3 has always done.
+        # "omniroute" = the OpenAI-compatible gateway, for BENCHMARKING archie-tui
+        #   against the codex and opencode lanes on the SAME model (big-pickle).
+        #
+        # ⚠️ READ BEFORE ENABLING omniroute. It is not merely a different URL:
+        #   * it leaves the DHQ dispatcher, so no welfare gating, no cold-load
+        #     queue, no capability routing (ADR-013)
+        #   * omniroute PROXIES TO EXTERNAL PROVIDERS, so egress leaves the infra
+        #   * it therefore bypasses the platform's own cloud posture —
+        #     `platform_settings.escalation_mode` and the per-call approval that
+        #     `ask_first` implies — and `_cloud_budget_ok`
+        # That is why it is OPT-IN, defaults to fleet, and is switched per session
+        # via `/model`. It exists to measure, not to become the normal path. Any
+        # move to make omniroute the DEFAULT is an owner/ADR decision, not a config
+        # tweak — see the PR that introduced this.
+        self.provider = (os.getenv("ARCHIE_ENGINE_PROVIDER") or "fleet").strip().lower()
+        if self.provider not in _PROVIDERS:
+            logger.warning(
+                "[inference] unknown ARCHIE_ENGINE_PROVIDER=%r — falling back to 'fleet'",
+                self.provider,
+            )
+            self.provider = "fleet"
+        self.omniroute_url = (os.getenv("OMNIROUTE_BASE_URL") or "").rstrip("/")
+        self.omniroute_key = (os.getenv("OMNIROUTE_API_KEY") or "").strip()
+        self.omniroute_model = (os.getenv("OMNIROUTE_MODEL") or "auto/coding:free").strip()
+
+    # ---- provider control -----------------------------------------------------
+
+    @property
+    def omniroute_enabled(self) -> bool:
+        """Both a URL and a key — a half-configured gateway is not a gateway."""
+        return bool(self.omniroute_url and self.omniroute_key)
+
+    def set_provider(self, name: str) -> tuple[bool, str]:
+        """Switch provider at runtime. Returns (ok, message) — never raises.
+
+        Refuses a switch to a provider that cannot actually serve, because a silent
+        switch that then falls back looks identical to a working one.
+        """
+        want = (name or "").strip().lower()
+        if want not in _PROVIDERS:
+            return False, f"unknown provider {name!r} — choose one of: {', '.join(sorted(_PROVIDERS))}"
+        if want == "omniroute" and not self.omniroute_enabled:
+            return False, "omniroute is not configured (needs OMNIROUTE_BASE_URL + OMNIROUTE_API_KEY)"
+        if want == "fleet" and not self.hub_enabled:
+            return False, "fleet is not configured (needs ARCHIE_HUB_URL + a hub API key)"
+        self.provider = want
+        return True, f"provider is now {want}"
+
     # ---- dispatcher path ------------------------------------------------------
 
     @property
@@ -107,7 +166,70 @@ class InferenceClient:
         """Use the dispatcher unless the call needs something it cannot express."""
         if format:
             return False
+        if self.provider != "fleet":
+            return False
         return self.hub_enabled
+
+    def _should_use_omniroute(self, format: str | dict | None = None) -> bool:
+        """Same carve-out as the hub: constrained decoding stays on the direct path.
+
+        omniroute is OpenAI-compatible and does advertise response_format, but the
+        engine's planner relies on Ollama's `format=` contract specifically, and
+        silently swapping one for the other is how a planner starts returning prose.
+        """
+        if format:
+            return False
+        return self.provider == "omniroute" and self.omniroute_enabled
+
+    async def _omniroute_complete(
+        self, prompt: str, system: str | None, model: str | None
+    ) -> dict | None:
+        """One gateway-routed completion. Same (dict | None) contract as the hub.
+
+        NEVER raises — every failure path returns None so the caller falls back to the
+        local host rather than losing the work, exactly like the dispatcher path.
+        """
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        # Unlike the fleet path we DO send a model: there is no dispatcher here to
+        # choose one, so an unpinned request would just take the gateway's default.
+        payload = {"model": model or self.omniroute_model, "messages": messages}
+        headers = {"Authorization": f"Bearer {self.omniroute_key}"}
+        try:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.omniroute_url}{_OMNIROUTE_PATH}", json=payload, headers=headers
+                ) as resp:
+                    if resp.status != 200:
+                        logger.info(
+                            "[inference] omniroute returned %s — falling back to direct",
+                            resp.status,
+                        )
+                        return None
+                    data = await resp.json()
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            text = ((choices[0].get("message") or {}).get("content") or "").strip()
+            if not text:
+                return None
+            usage = data.get("usage") or {}
+            return {
+                "text": text,
+                # OpenAI names these prompt_/completion_tokens too, so the two
+                # providers report through one shape and stay directly comparable.
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                # What the GATEWAY resolved the alias to (e.g. auto/coding:free ->
+                # big-pickle) — the same value omniroute's call log records.
+                "model_used": data.get("model"),
+                "agent_name": None,
+            }
+        except Exception as e:  # noqa: BLE001 - a gateway outage must never break Lane 3
+            logger.info("[inference] omniroute unreachable (%s) — falling back to direct", e)
+            return None
 
     async def _hub_complete(
         self, prompt: str, system: str | None, model: str | None
@@ -216,6 +338,19 @@ class InferenceClient:
         system: str | None = None,
     ) -> dict:
         """Non-streaming text generation. Dispatcher first, direct fallback."""
+        if self._should_use_omniroute():
+            gw = await self._omniroute_complete(prompt, system, model)
+            if gw is not None:
+                return {
+                    "response": gw["text"],
+                    "model": gw.get("model_used") or model,
+                    "done": True,
+                    "_via": "omniroute",
+                    "prompt_tokens": gw["prompt_tokens"],
+                    "completion_tokens": gw["completion_tokens"],
+                    "agent_name": None,
+                }
+
         if self._should_use_hub():
             hub = await self._hub_complete(prompt, system, model)
             if hub is not None:
@@ -259,6 +394,20 @@ class InferenceClient:
         op-list (#380). ⚠️ The hub endpoint cannot express it, so a call passing
         ``format`` goes DIRECT and keeps its guarantee.
         """
+        if self._should_use_omniroute(format):
+            body, sys_from_msgs = self._flatten(messages)
+            gw = await self._omniroute_complete(body, system or sys_from_msgs, model)
+            if gw is not None:
+                return {
+                    "message": {"role": "assistant", "content": gw["text"]},
+                    "model": gw.get("model_used") or model,
+                    "done": True,
+                    "_via": "omniroute",
+                    "prompt_tokens": gw["prompt_tokens"],
+                    "completion_tokens": gw["completion_tokens"],
+                    "agent_name": None,
+                }
+
         if self._should_use_hub(format):
             body, sys_from_msgs = self._flatten(messages)
             hub = await self._hub_complete(body, system or sys_from_msgs, model)
