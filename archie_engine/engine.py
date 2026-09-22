@@ -1124,6 +1124,49 @@ class Engine:
         # protected branches. Stamp merged:false on the terminal frame explicitly.
         return {"type": "build_result", "merged": False, **result}
 
+    def _handle_control_command(self, content: str) -> str | None:
+        """Built-in control commands. Returns the reply, or None if not one of ours.
+
+        Returning None (rather than an error) is what lets an unknown slash fall
+        through to the skill registry unchanged — this must never swallow a skill.
+
+        /model                  show the active provider and what is available
+        /model fleet            sovereign: hub -> department_dispatcher -> local GPUs
+        /model omniroute        the OpenAI-compatible gateway, for benchmarking
+        """
+        parts = content.strip().split()
+        if not parts or parts[0] != "/model":
+            return None
+
+        inf = getattr(self, "inference", None)
+        if inf is None:
+            return "inference client is not attached — cannot report or change the provider"
+
+        if len(parts) == 1:
+            fleet_ok = "ready" if inf.hub_enabled else "NOT CONFIGURED"
+            gw_ok = "ready" if inf.omniroute_enabled else "NOT CONFIGURED"
+            return (
+                f"provider: **{inf.provider}**\n"
+                f"  fleet      {fleet_ok}  — sovereign; dispatcher picks the node + model\n"
+                f"  omniroute  {gw_ok}  — gateway, model {inf.omniroute_model}\n"
+                "\nSwitch with `/model fleet` or `/model omniroute`.\n"
+                "⚠️ omniroute leaves the DHQ dispatcher and egresses to external "
+                "providers, so it skips welfare gating, capability routing and the "
+                "platform's cloud posture. It is for BENCHMARKING against the codex "
+                "and opencode lanes on the same model — not the normal path."
+            )
+
+        ok, message = inf.set_provider(parts[1])
+        if not ok:
+            return f"unchanged — {message}"
+        if inf.provider == "omniroute":
+            return (
+                f"{message}\n⚠️ now routing OUTSIDE the fleet via the gateway "
+                f"({inf.omniroute_model}). Dispatcher gating does not apply. "
+                "`/model fleet` returns to the sovereign path."
+            )
+        return message
+
     async def _process_chat_message(self, msg: dict, send=None) -> dict:
         content = msg.get("content", "")
         session_id = msg.get("session_id")
@@ -1139,6 +1182,24 @@ class Engine:
 
         # Record user message
         await self.sessions.add_message(session_id, "user", content)
+
+        # Built-in CONTROL commands come FIRST (#6776).
+        #
+        # These are not skills. A skill is a markdown prompt-template executed BY an
+        # LLM (skills/community/*.md); /model changes how the engine ROUTES, so running
+        # it through the model it reconfigures would be circular. Checked ahead of the
+        # registry so an ingested community skill named "model" cannot shadow it.
+        if content.startswith("/"):
+            builtin = self._handle_control_command(content)
+            if builtin is not None:
+                await self.sessions.add_message(session_id, "assistant", builtin)
+                return {
+                    "type": "response",
+                    "session_id": session_id,
+                    "content": builtin,
+                    "intent": "control",
+                    "tool_calls": [],
+                }
 
         # Check for slash command
         if content.startswith("/"):
